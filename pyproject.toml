@@ -70,6 +70,9 @@ warn_unused_configs = true
 warn_unused_ignores = true
 
 [tool.pytest.ini_options]
+# The build drivers are imported from the source tree and installed into no
+# wheel, so a bare `pytest` has to find them the way `python -m pytest` does.
+pythonpath = ["."]
 python_files = ["test_*.py"]
 testpaths = ["tests"]
 

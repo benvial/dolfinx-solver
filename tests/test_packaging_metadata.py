@@ -15,14 +15,16 @@ from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
 from packaging.version import Version
 
+from wheelbuild.mpich import MPICH_VERSION
+from wheelbuild.pin_check import expected_specifier
 from wheelbuild.version import __version__
 
 #: MPICH release the wheel vendors libmpifort from, and the series the runtime
-#: dependency is therefore bounded to (ADR-0001). The container build's MPICH
-#: driver takes ownership of the release number when it lands, and pin_check
-#: then asserts these two against each other rather than against a literal.
-MPICH_SERIES = "5.0.1"
-MPICH_REQUIREMENT = ">=5.0,<6"
+#: dependency is therefore bounded to (ADR-0001). Both come from the build
+#: driver that owns them, so the metadata is checked against what the wheel is
+#: actually built from rather than against a literal copied beside it.
+MPICH_SERIES = MPICH_VERSION
+MPICH_REQUIREMENT = expected_specifier(MPICH_VERSION)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BINARY_PROJECT = REPO_ROOT / "pyproject.toml"
