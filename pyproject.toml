@@ -28,16 +28,21 @@ requires-python = ">=3.12"
 # The fenics-basix/ffcx/ufl pins are copied verbatim from upstream DOLFINx's
 # python/pyproject.toml at the mirrored release (v0.11.0.post0): upstream's own
 # pins are the coupling contract between the C++ core in this wheel and the
-# pure-python trio, and CI's pin_check asserts they still agree. mpich is the
-# loose pin the frozen MPICH ABI allows (libmpi.so.12); mpi4py is unpinned and
-# supplies the libmpi this process loads first. Spec §5, §10.
+# pure-python trio, and CI's pin_check asserts they still agree.
+#
+# mpich is bounded to one major series rather than floored: the soname stays
+# libmpi.so.12 across series, but the libmpifort this wheel vendors is built
+# against a particular libmpi's exported symbols, and an older runtime would
+# fail at the user's first import. The bound tracks the series the vendored
+# build comes from. mpi4py is unpinned and is what loads that libmpi first.
+# Spec §5, §10; ADR-0001.
 dependencies = [
   "cffi",
   "fenics-basix>=0.11.0,<0.12.0",
   "fenics-ffcx>=0.11.0,<0.12.0",
   "fenics-ufl>=2026.1.0,<2026.2.0",
   "mpi4py",
-  "mpich>=4.2",
+  "mpich>=5.0,<6",
   "numpy>=2"
 ]
 

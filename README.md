@@ -38,7 +38,9 @@ process.
 ## Requirements and constraints
 
 - Linux x86_64, `manylinux_2_34`, Python 3.12+ (one `cp312-abi3` wheel).
-- An MPICH-ABI MPI (`mpich`, `impi-rt`). Open MPI will not work.
+- The PyPI `mpich` wheel, 5.0 series (installed for you). The wheel vendors
+  MPICH's Fortran bindings built against that series, so neither an older
+  `mpich` nor another MPI — Open MPI, Intel MPI — will do.
 - A virtual-environment-style prefix; install into an environment of its own.
 - Do not co-install the PyPI `petsc`, `petsc4py`, `slepc` or `slepc4py`
   projects — they would put a second PETSc in the process.

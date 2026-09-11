@@ -11,9 +11,18 @@ from pathlib import Path
 
 import pytest
 from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
+from packaging.version import Version
 
 from wheelbuild.version import __version__
+
+#: MPICH release the wheel vendors libmpifort from, and the series the runtime
+#: dependency is therefore bounded to (ADR-0001). The container build's MPICH
+#: driver takes ownership of the release number when it lands, and pin_check
+#: then asserts these two against each other rather than against a literal.
+MPICH_SERIES = "5.0.1"
+MPICH_REQUIREMENT = ">=5.0,<6"
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BINARY_PROJECT = REPO_ROOT / "pyproject.toml"
@@ -65,8 +74,22 @@ def test_the_upstream_trio_is_pinned_as_upstream_pins_it(binary):
 
 
 def test_the_mpi_dependencies_match_the_shared_process_contract(binary):
-    assert "mpich>=4.2" in binary["dependencies"]
+    assert f"mpich{MPICH_REQUIREMENT}" in binary["dependencies"]
     assert "mpi4py" in binary["dependencies"]
+
+
+def test_the_mpich_pin_bounds_a_series_rather_than_setting_a_floor():
+    """ADR-0001: the vendored libmpifort is built against one series' libmpi.
+
+    A floor alone resolves to whatever the wheel publishes next, which can be
+    an older runtime than the Fortran layer we ship against it — and that
+    fails at the user's first import, not at install.
+    """
+    specifier = SpecifierSet(MPICH_REQUIREMENT)
+
+    assert Version(MPICH_SERIES) in specifier
+    assert Version("4.3.2") not in specifier
+    assert Version("6.0.0") not in specifier
 
 
 @pytest.mark.parametrize("forbidden", FORBIDDEN_DEPENDENCIES)
