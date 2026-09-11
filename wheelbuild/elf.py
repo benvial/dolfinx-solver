@@ -44,8 +44,12 @@ _SYMBOL_LINE = re.compile(
 UNDEFINED_TYPES = frozenset({"U", "v", "w"})
 
 #: A ``readelf -d`` entry, whose value is bracketed:
-#: ``0x…e (SONAME) Library soname: [libmpi.so.12]``.
-_DYNAMIC_ENTRY = re.compile(r"\((?P<tag>[A-Z_]+)\)[^\[]*\[(?P<value>[^\]]*)\]")
+#: ``0x…e (SONAME) Library soname: [libmpi.so.12]``. Not every tag has a
+#: bracketed value — ``(FLAGS) SYMBOLIC`` does not — so the gap before the
+#: bracket must stop at the end of the line. Allowed to cross one, a tag with
+#: no value reaches down and claims the next entry's, which both mislabels
+#: that value and consumes the entry it came from.
+_DYNAMIC_ENTRY = re.compile(r"\((?P<tag>[A-Z_]+)\)[^\[\n]*\[(?P<value>[^\]]*)\]")
 
 #: Prefixes of the symbols an MPI library is expected to supply: the standard
 #: ``MPI_``/``PMPI_`` entry points, MPICH's internal ``MPIR_``/``MPII_``/

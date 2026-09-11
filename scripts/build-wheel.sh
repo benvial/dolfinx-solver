@@ -7,8 +7,9 @@
 # already in the cached install prefix — so a warm cache re-proves the stack
 # instead of recompiling it.
 #
-# Stages so far: the Fortran half of MPICH. PETSc, SLEPc, ADIOS2, KaHIP,
-# DOLFINx and the wheel assembly follow in later tickets.
+# Stages so far: the Fortran half of MPICH, then PETSc with its whole
+# --download-* dependency stack, then SLEPc against that PETSc. ADIOS2, KaHIP,
+# petsc4py/slepc4py, DOLFINx and the wheel assembly follow in later tickets.
 #
 # Environment:
 #   BUILD_ROOT   scratch root for sources, build trees and the install prefix
@@ -33,10 +34,31 @@ export PYTHONPATH="$repo_root"
 
 mkdir -p "$build_root" "$CCACHE_DIR"
 
+# Download and unpack a source tarball into $build_root, once. The marker is
+# written only after tar returns, so an interrupted extraction is redone
+# rather than compiled against half a source tree.
+fetch_source() {
+  local url="$1" source_dir="$2" archive="$build_root/${2##*/}.tar.gz"
+  if [[ ! -f "$source_dir/.extracted" ]]; then
+    rm -rf "${source_dir:?}"
+    curl -fsSL "$url" -o "$archive"
+    tar -xzf "$archive" -C "$build_root"
+    touch "$source_dir/.extracted"
+  fi
+}
+
+# Read a constant out of a wheelbuild driver, so the shell never holds a
+# second copy of a version or a URL.
+driver() { python -c "$1"; }
+
 echo "==> toolchain"
 # gfortran is the whole point of the MPICH stage, and the manylinux image does
-# not carry it. ccache is what makes a warm rebuild cheap.
-dnf install -y ccache gcc-gfortran patchelf >/dev/null
+# not carry it. flex is not in the image either and PT-SCOTCH's build refuses
+# to configure without it, which PETSc reports hours in. ccache is what makes
+# a warm rebuild cheap. cmake and bison the image already has, and PETSc drives
+# its CMake sub-builds with -DCMAKE_POLICY_VERSION_MINIMUM=3.5, so the image's
+# CMake 4 is happy with recipes written for CMake 2.8.
+dnf install -y ccache gcc-gfortran patchelf flex >/dev/null
 export PATH="/usr/lib64/ccache:$PATH"
 
 echo "==> build environment"
@@ -67,18 +89,11 @@ echo "==> install prefix layout"
 python -m wheelbuild.prefix --prefix "$install_prefix"
 
 echo "==> MPICH (Fortran half only; the PyPI wheel supplies libmpi)"
-mpich_version="$(python -c 'from wheelbuild.mpich import MPICH_VERSION; print(MPICH_VERSION)')"
-mpich_url="$(python -c 'from wheelbuild.mpich import source_url; print(source_url())')"
+mpich_version="$(driver 'from wheelbuild.mpich import MPICH_VERSION; print(MPICH_VERSION)')"
+mpich_url="$(driver 'from wheelbuild.mpich import source_url; print(source_url())')"
 [[ -n "$mpich_version" ]] || { echo "could not read MPICH_VERSION" >&2; exit 1; }
 mpich_source="$build_root/mpich-$mpich_version"
-# The marker is written only after tar returns, so an interrupted extraction
-# is redone rather than compiled against half a source tree.
-if [[ ! -f "$mpich_source/.extracted" ]]; then
-  rm -rf "${mpich_source:?}"
-  curl -fsSL "$mpich_url" -o "$build_root/mpich-$mpich_version.tar.gz"
-  tar -xzf "$build_root/mpich-$mpich_version.tar.gz" -C "$build_root"
-  touch "$mpich_source/.extracted"
-fi
+fetch_source "$mpich_url" "$mpich_source"
 if [[ -f "$install_prefix/lib/libmpifort.so.12" ]]; then
   echo "    cached in $install_prefix; re-checking it against $runtime_libmpi"
   python -m wheelbuild.mpich \
@@ -94,6 +109,56 @@ else
     --prefix "$install_prefix" \
     --runtime-libmpi "$runtime_libmpi" \
     --jobs "$jobs"
+fi
+
+echo "==> PETSc (complex scalars, plus its whole --download-* dependency stack)"
+# The multi-hour stage: OpenBLAS, ScaLAPACK, METIS, PT-SCOTCH, MUMPS,
+# SuperLU_DIST and parallel HDF5 are all built by PETSc's configure from the
+# one line in wheelbuild/petsc.py. PETSc builds in its own source tree, so
+# $petsc_source is the build tree the cache is really keeping.
+petsc_version="$(driver 'from wheelbuild.petsc import PETSC_VERSION; print(PETSC_VERSION)')"
+petsc_url="$(driver 'from wheelbuild.petsc import source_url; print(source_url())')"
+[[ -n "$petsc_version" ]] || { echo "could not read PETSC_VERSION" >&2; exit 1; }
+petsc_source="$build_root/petsc-$petsc_version"
+fetch_source "$petsc_url" "$petsc_source"
+# The stamp, not a library file, is what says the stage is done: it is written
+# after the driver has installed *and* validated, so an interrupted make
+# install leaves no stamp and is rebuilt rather than re-checked forever. Its
+# name carries the release and the scalar type, so bumping either takes the
+# build path against a warm prefix instead of silently keeping the old one.
+petsc_stamp="$install_prefix/.petsc-$petsc_version-complex.installed"
+if [[ -f "$petsc_stamp" ]]; then
+  echo "    cached in $install_prefix; re-checking what it says about itself"
+  python -m wheelbuild.petsc --validate-only --prefix "$install_prefix"
+else
+  # The MPI prefix is the shared prefix: the wrappers, and the mpif.h PETSc's
+  # Fortran packages compile against, are what the MPICH stage just installed.
+  python -m wheelbuild.petsc \
+    --source-dir "$petsc_source" \
+    --prefix "$install_prefix" \
+    --mpi-prefix "$install_prefix" \
+    --jobs "$jobs"
+  touch "$petsc_stamp"
+fi
+
+echo "==> SLEPc (against the PETSc just built)"
+slepc_version="$(driver 'from wheelbuild.slepc import SLEPC_VERSION; print(SLEPC_VERSION)')"
+slepc_url="$(driver 'from wheelbuild.slepc import source_url; print(source_url())')"
+[[ -n "$slepc_version" ]] || { echo "could not read SLEPC_VERSION" >&2; exit 1; }
+slepc_source="$build_root/slepc-$slepc_version"
+fetch_source "$slepc_url" "$slepc_source"
+# Stamped on the PETSc release too: a PETSc bump has to rebuild the SLEPc that
+# was linked against the old one, and the stamp is what makes that automatic.
+slepc_stamp="$install_prefix/.slepc-$slepc_version-petsc-$petsc_version.installed"
+if [[ -f "$slepc_stamp" ]]; then
+  echo "    cached in $install_prefix; re-checking it still binds that PETSc"
+  python -m wheelbuild.slepc --validate-only --prefix "$install_prefix"
+else
+  python -m wheelbuild.slepc \
+    --source-dir "$slepc_source" \
+    --prefix "$install_prefix" \
+    --jobs "$jobs"
+  touch "$slepc_stamp"
 fi
 
 echo "==> done"

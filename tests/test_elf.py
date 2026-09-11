@@ -112,3 +112,20 @@ def test_the_needed_entries_are_what_the_library_asks_the_loader_for():
 def test_entries_that_are_not_names_are_not_mistaken_for_them():
     """INIT and friends carry addresses, not bracketed library names."""
     assert "0x9000" not in elf.parse_needed(READELF_OUTPUT)
+
+
+# A tag whose value is not bracketed, sitting above ones that are. libpetsc
+# has several.
+UNBRACKETED_OUTPUT = """\
+Dynamic section at offset 0x2d1c8 contains 4 entries:
+ 0x000000000000001e (FLAGS)              SYMBOLIC
+ 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN/../lib]
+ 0x0000000000000001 (NEEDED)             Shared library: [libpetsc.so.3.25]
+ 0x000000000000000e (SONAME)             Library soname: [libslepc.so.3.25]
+"""
+
+
+def test_a_tag_without_a_value_does_not_claim_the_next_entrys():
+    """Reaching across the line both mislabels a value and eats an entry."""
+    assert elf.parse_needed(UNBRACKETED_OUTPUT) == {"libpetsc.so.3.25"}
+    assert elf.parse_soname(UNBRACKETED_OUTPUT) == "libslepc.so.3.25"
