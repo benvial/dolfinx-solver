@@ -1,0 +1,42 @@
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = ["setuptools>=77", "wheel"]
+
+# The bare name, published as a meta-package with no binaries: it holds the
+# name on PyPI and gives `pip install dolfinx-solver` a default variant
+# (spec §1). The scalar type is baked into the binaries, so the variants are
+# separate distributions and this one picks the complex build oslumen's
+# photonics workloads need.
+#
+# The version is written here rather than read from dolfinx_solver, because
+# this project builds on its own with the package it depends on absent; the
+# test suite fails if it drifts from dolfinx_solver.__version__.
+[project]
+authors = [{name = "oslumen community", email = "contact@oslumen.org"}]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Mathematics",
+  "Topic :: Scientific/Engineering :: Physics"
+]
+dependencies = ["dolfinx-solver-complex==0.11.0.post0"]
+description = "DOLFINx (FEniCSx) as a binary wheel: installs the complex-scalar build"
+keywords = ["dolfinx", "fenics", "fenicsx", "finite element"]
+license = "LGPL-3.0-or-later"
+license-files = ["LICENSE*"]
+maintainers = [{name = "Benjamin Vial", email = "benjamin.vial84@gmail.com"}]
+name = "dolfinx-solver"
+readme = "README.md"
+requires-python = ">=3.12"
+version = "0.11.0.post0"
+
+[project.urls]
+"Bug Tracker" = "https://github.com/benvial/dolfinx-solver/issues"
+Homepage = "https://github.com/benvial/dolfinx-solver"
+Repository = "https://github.com/benvial/dolfinx-solver"
+
+[tool.setuptools]
+# No code of its own: the dependency is the whole payload.
+py-modules = []

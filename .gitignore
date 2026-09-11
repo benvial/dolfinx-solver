@@ -1,0 +1,20 @@
+# Build outputs
+build/
+dist/
+wheelhouse/
+*.egg-info/
+
+# The wheel payload, assembled into the package at build time
+dolfinx_solver/lib/
+dolfinx_solver/THIRD-PARTY-NOTICES
+
+# Container build cache (sources, build trees, install prefix, ccache)
+.build-cache/
+
+# Python and tool caches
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/

@@ -1,0 +1,118 @@
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = ["setuptools>=77", "wheel"]
+
+[project]
+authors = [{name = "oslumen community", email = "contact@oslumen.org"}]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Scientific/Engineering :: Mathematics",
+  "Topic :: Scientific/Engineering :: Physics"
+]
+description = "DOLFINx (FEniCSx) with complex-scalar PETSc and SLEPc, packaged as a binary wheel"
+dynamic = ["version"]
+keywords = ["dolfinx", "fenics", "fenicsx", "finite element", "petsc", "slepc"]
+license = "LGPL-3.0-or-later"
+license-files = ["LICENSE*"]
+maintainers = [{name = "Benjamin Vial", email = "benjamin.vial84@gmail.com"}]
+name = "dolfinx-solver-complex"
+readme = "README.md"
+requires-python = ">=3.12"
+
+# The fenics-basix/ffcx/ufl pins are copied verbatim from upstream DOLFINx's
+# python/pyproject.toml at the mirrored release (v0.11.0.post0): upstream's own
+# pins are the coupling contract between the C++ core in this wheel and the
+# pure-python trio, and CI's pin_check asserts they still agree. mpich is the
+# loose pin the frozen MPICH ABI allows (libmpi.so.12); mpi4py is unpinned and
+# supplies the libmpi this process loads first. Spec §5, §10.
+dependencies = [
+  "cffi",
+  "fenics-basix>=0.11.0,<0.12.0",
+  "fenics-ffcx>=0.11.0,<0.12.0",
+  "fenics-ufl>=2026.1.0,<2026.2.0",
+  "mpi4py",
+  "mpich>=4.2",
+  "numpy>=2"
+]
+
+[project.optional-dependencies]
+dev = ["abi3audit", "auditwheel>=6.0", "build", "mypy", "packaging", "pytest>=7.0", "ruff", "wheel"]
+
+[project.urls]
+"Bug Tracker" = "https://github.com/benvial/dolfinx-solver/issues"
+Homepage = "https://github.com/benvial/dolfinx-solver"
+Repository = "https://github.com/benvial/dolfinx-solver"
+
+[tool.mypy]
+check_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_decorators = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+python_version = "3.12"
+strict_equality = true
+warn_no_return = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unreachable = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+python_files = ["test_*.py"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.ruff.lint]
+ignore = [
+  "ANN",  # flake8-annotations (docstrings carry the argument docs)
+  "COM812",  # missing-trailing-comma (formatter owns this)
+  "CPY001",  # missing copyright notice
+  "D203",
+  "D213",
+  "EM101",
+  "EM102",
+  "PLR0913",  # too-many-arguments (keyword-only build entry points)
+  "PERF401",
+  "PLR2004",
+  "S603",  # subprocess call (build tooling drives cmake/auditwheel)
+  "S607",
+  "TC003",  # typing-only-standard-library-import
+  "TRY003"
+]
+select = ["ALL"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["D", "INP001", "S101", "PLC0415", "PT011"]
+"wheelbuild/*.py" = ["T201"]  # build steps report progress on stdout
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.setuptools.dynamic]
+version = {attr = "dolfinx_solver._version.__version__"}
+
+[tool.setuptools.package-data]
+# Vendored shared libraries and the harvested notices live inside this package
+# and are put there by the build, not checked in.
+dolfinx_solver = ["lib/*", "lib/**/*", "py.typed", "THIRD-PARTY-NOTICES"]
+
+[tool.setuptools.packages.find]
+# Only this package is built from the source tree. The rest of the payload —
+# dolfinx, petsc4py and slepc4py under their upstream import names — is
+# grafted into the wheel as top-level siblings by wheelbuild's assembly step
+# (spec §6), which is also the layout the sibling-rpath linkage and the
+# foreign-petsc4py check in dolfinx_solver._bootstrap expect.
+include = ["dolfinx_solver", "dolfinx_solver.*"]
