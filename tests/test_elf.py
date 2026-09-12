@@ -129,3 +129,37 @@ def test_a_tag_without_a_value_does_not_claim_the_next_entrys():
     """Reaching across the line both mislabels a value and eats an entry."""
     assert elf.parse_needed(UNBRACKETED_OUTPUT) == {"libpetsc.so.3.25"}
     assert elf.parse_soname(UNBRACKETED_OUTPUT) == "libslepc.so.3.25"
+
+
+# A `readelf -d` dump of an extension module after the rpath rewrite: the
+# search path is relative, and the entry with no bracketed value is the one
+# that used to swallow its neighbour's.
+READELF_RUNPATH = """\
+Dynamic section at offset 0x2d10 contains 27 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libpetsc.so.3.25]
+ 0x000000000000000e (SONAME)             Library soname: [PETSc.abi3.so]
+ 0x000000000000001d (RUNPATH)   Library runpath: [$ORIGIN/../../dolfinx_solver/lib]
+ 0x000000000000001e (FLAGS)              SYMBOLIC
+"""
+
+
+def test_the_runpath_is_read_out_of_the_dynamic_section():
+    assert elf.parse_runpath(READELF_RUNPATH) == ("$ORIGIN/../../dolfinx_solver/lib",)
+
+
+def test_a_colon_separated_runpath_is_one_entry_per_directory():
+    dump = " 0x1d (RUNPATH) Library runpath: [/build/install/lib:$ORIGIN/../lib]\n"
+
+    assert elf.parse_runpath(dump) == ("/build/install/lib", "$ORIGIN/../lib")
+
+
+def test_the_older_rpath_tag_is_read_the_same_way():
+    """patchelf writes DT_RUNPATH; a library built before it may carry DT_RPATH."""
+    dump = " 0x0f (RPATH) Library rpath: [/build/install/lib]\n"
+
+    assert elf.parse_runpath(dump) == ("/build/install/lib",)
+
+
+def test_a_library_with_no_search_path_reports_none():
+    assert elf.parse_runpath(NM_OUTPUT) == ()

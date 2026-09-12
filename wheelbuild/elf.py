@@ -141,6 +141,29 @@ def parse_needed(text: str) -> frozenset[str]:
     )
 
 
+def parse_runpath(text: str) -> tuple[str, ...]:
+    """Return the library search path a ``readelf -d`` dump records.
+
+    A shared object carries its search path as ``DT_RUNPATH``, or as the older
+    ``DT_RPATH`` when it was linked before either the linker or patchelf
+    started preferring the former. Both spell the same thing — a
+    colon-separated list of directories, each of which may be relative to the
+    loading object through ``$ORIGIN`` — so both are read here.
+
+    Args:
+        text: Output of ``readelf -d`` over a shared library.
+
+    Returns:
+        The directories, in the order the loader searches them, empty when the
+        library records no search path at all.
+    """
+    directories: list[str] = []
+    for match in _DYNAMIC_ENTRY.finditer(text):
+        if match["tag"] in {"RUNPATH", "RPATH"}:
+            directories.extend(entry for entry in match["value"].split(":") if entry)
+    return tuple(directories)
+
+
 def read_symbols(library: Path) -> tuple[set[str], set[str]]:
     """Read a shared library's dynamic symbol table.
 
@@ -171,3 +194,18 @@ def read_dynamic(library: Path) -> tuple[str | None, frozenset[str]]:
     """
     text = capture(["readelf", "--dynamic", str(library)])
     return parse_soname(text), parse_needed(text)
+
+
+def read_runpath(library: Path) -> tuple[str, ...]:
+    """Read the search path a shared library asks the loader to use.
+
+    Args:
+        library: Path of the shared library to inspect.
+
+    Returns:
+        Its ``DT_RUNPATH`` (or ``DT_RPATH``) directories, in search order.
+
+    Raises:
+        subprocess.CalledProcessError: When ``readelf`` cannot read the file.
+    """
+    return parse_runpath(capture(["readelf", "--dynamic", str(library)]))

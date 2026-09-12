@@ -8,8 +8,9 @@
 # instead of recompiling it.
 #
 # Stages so far: the Fortran half of MPICH, then PETSc with its whole
-# --download-* dependency stack, then SLEPc against that PETSc. ADIOS2, KaHIP,
-# petsc4py/slepc4py, DOLFINx and the wheel assembly follow in later tickets.
+# --download-* dependency stack, then SLEPc against that PETSc, then our own
+# petsc4py and slepc4py against both. ADIOS2, KaHIP, DOLFINx and the wheel
+# assembly follow in later tickets.
 #
 # Environment:
 #   BUILD_ROOT   scratch root for sources, build trees and the install prefix
@@ -64,7 +65,14 @@ export PATH="/usr/lib64/ccache:$PATH"
 echo "==> build environment"
 [[ -x "$venv/bin/python" ]] || "$base_python" -m venv "$venv"
 "$venv/bin/pip" install --quiet --upgrade pip
-"$venv/bin/pip" install --quiet build auditwheel packaging wheel
+# build/auditwheel/packaging/wheel drive the packaging; setuptools, Cython and
+# numpy are what petsc4py's and slepc4py's setup.py need, and they are
+# installed here rather than fetched per build so --no-build-isolation can keep
+# the bindings' build on versions this build controls. mpi4py is the runtime
+# half of the import check: it is what dlopens the PyPI mpich wheel's libmpi
+# before any compiled module of ours (spec §5).
+"$venv/bin/pip" install --quiet \
+  build auditwheel packaging wheel setuptools "cython>=3" "numpy>=2" mpi4py
 # The PyPI mpich wheel is installed here for one reason: its libmpi.so.12 is
 # the library a user's install resolves, and the MPICH stage proves the
 # vendored libmpifort against that exact file (ADR-0001). It is installed
@@ -159,6 +167,24 @@ else
     --prefix "$install_prefix" \
     --jobs "$jobs"
   touch "$slepc_stamp"
+fi
+
+echo "==> petsc4py + slepc4py (ours, against the vendored PETSc and SLEPc)"
+# Both bindings come out of the tarballs the PETSc and SLEPc stages already
+# downloaded, never the PyPI sdists, and are staged into $install_prefix/python
+# under their upstream import names with no dist-info — the layout the wheel
+# assembly step grafts and the layout their relative rpath is written for.
+# Stamped on both releases, since a bump of either rebuilds both bindings.
+bindings_stamp="$install_prefix/.bindings-petsc-$petsc_version-slepc-$slepc_version.installed"
+if [[ -f "$bindings_stamp" ]]; then
+  echo "    cached in $install_prefix; re-checking the staged tree and importing it"
+  python -m wheelbuild.bindings --validate-only --prefix "$install_prefix"
+else
+  python -m wheelbuild.bindings \
+    --prefix "$install_prefix" \
+    --petsc-source "$petsc_source" \
+    --slepc-source "$slepc_source"
+  touch "$bindings_stamp"
 fi
 
 echo "==> done"
