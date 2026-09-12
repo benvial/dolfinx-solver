@@ -198,7 +198,7 @@ REQUIRED_LINKAGE = {
 #: those are declared once, in our own ``pyproject.toml``, copied verbatim
 #: from upstream's (spec §10). Reading them back from there is what keeps the
 #: build and the metadata from drifting apart.
-UPSTREAM_TRIO = ("fenics-basix", "fenics-ffcx", "fenics-ufl")
+UPSTREAM_TRIO = pin_check.UPSTREAM_TRIO
 
 
 def upstream_trio_requirements(pyproject_text: str | None = None) -> list[str]:

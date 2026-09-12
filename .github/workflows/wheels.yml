@@ -1,0 +1,246 @@
+# Build the dolfinx-solver-complex wheel and prove it, on every push.
+#
+# Three jobs, in the order a failure is cheapest to find in:
+#
+#   checks  seconds, and needs nothing built: lint, types, unit tests, and the
+#           two pin checks that tie this repository's metadata to things
+#           outside it — the MPICH series the wheel vendors half of, and
+#           upstream DOLFINx's own trio pins (spec §10).
+#   wheel   the compile, in the manylinux_2_34 image the wheel claims. Cold it
+#           is a multi-hour superbuild; warm it re-proves the seven cached
+#           stages in about a minute and assembles the wheel. What decides
+#           which of those happens is the cache restored here plus the stamps
+#           inside it, not this file.
+#   tests   the wheel, installed into clean venvs on 3.12, 3.13 and 3.14 and
+#           put through the whole wheeltest suite — on the plain runner, never
+#           in the build image, because manylinux_2_34 is a promise about
+#           other machines and the image that compiled it cannot test that.
+#
+# Publishing is deliberately not here: a `v*` tag gets as far as a tested
+# wheel, and the upload is its own workflow (spec §9).
+name: wheels
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+# One run per ref, but cancellation is scoped to pull requests. A cold
+# superbuild is hours, and the cache is written by the job's post-step — so
+# cancelling one mid-compile throws away everything it built. Two pushes to
+# main in an afternoon would then leave main permanently cold, each run killing
+# the one that was about to warm it. A pull request has no such problem: its
+# runs are cheap to redo and a superseded one is just noise.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # The interpreter the abi3 wheel targets, and the one the checks job runs.
+  ABI3_PYTHON: '3.12'
+
+jobs:
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.ABI3_PYTHON }}
+
+      # The same install a contributor makes locally, so a failure here is one
+      # they can reproduce with the command in the README.
+      - name: Install the development environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+
+      - name: ruff
+        run: |
+          ruff check .
+          ruff format --check .
+
+      # Both driver packages and the package that ships, which is every line
+      # of Python in the repository outside the tests.
+      - name: mypy
+        run: mypy dolfinx_solver wheelbuild wheeltest
+
+      - name: pytest
+        run: pytest
+
+      # Seconds, and it is the only thing standing between a drifted pin and a
+      # user's resolver: the vendored libmpifort's MPICH series against the
+      # declared `mpich` bound, and our trio pins against the ones upstream
+      # DOLFINx declares at the release this wheel mirrors. --fetch-upstream
+      # reads that file at its tag, which is the same immutable text the
+      # build compiles against.
+      - name: Pin check
+        run: python -m wheelbuild.pin_check --fetch-upstream
+
+      # A tag that does not name the packaged version would publish a release
+      # under a number nobody chose, and PyPI never reuses a filename. This
+      # runs before the multi-hour build rather than at the upload.
+      - name: Tag check
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python -m wheelbuild.tag_check "${GITHUB_REF_NAME}"
+
+  wheel:
+    name: wheel (manylinux_2_34_x86_64)
+    needs: checks
+    runs-on: ubuntu-latest
+    # A cold superbuild — OpenBLAS, ScaLAPACK, METIS, PT-SCOTCH, MUMPS,
+    # SuperLU_DIST, HDF5, ADIOS2, KaHIP, DOLFINx — is hours. A warm one is
+    # minutes. The limit is sized for the first of those.
+    timeout-minutes: 350
+    container:
+      image: quay.io/pypa/manylinux_2_34_x86_64
+    steps:
+      - uses: actions/checkout@v5
+
+      # Everything the build produces: the source tarballs, the build trees,
+      # the shared install prefix and the ccache. Restoring it is what turns
+      # a multi-hour compile into a re-validation of what is already there —
+      # each stage's driver is still run, against the stamp it wrote.
+      #
+      # What must *not* be cached is deleted before the post-step packs this
+      # (see "Drop what the cache must not carry"), rather than excluded here:
+      # actions/cache resolves `path` with implicit descendants off, so a `!`
+      # line naming something inside .build-cache would filter an empty set
+      # and quietly exclude nothing.
+      #
+      # The key is every input that can change what a stage should produce:
+      # the drivers themselves, the script that names the cache stamps
+      # (ticket 11), and pyproject.toml, whose trio pins are the releases
+      # DOLFINx's C++ core compiles against. The scalar type is in the key by
+      # name as well as by driver hash, so that building the real variant
+      # (spec §6) alongside this one cannot make the two share an entry.
+      #
+      # The restore-keys prefix deliberately accepts an older entry when the
+      # exact key misses: the stamps inside decide what is rebuilt, and a
+      # stale ccache is worth far more than a cold one.
+      - name: Restore the superbuild cache
+        uses: actions/cache@v4
+        with:
+          path: .build-cache
+          key: superbuild-complex-manylinux_2_34_x86_64-${{ hashFiles('wheelbuild/**/*.py', 'scripts/build-wheel.sh', 'dolfinx_solver/_version.py', 'pyproject.toml') }}
+          restore-keys: |
+            superbuild-complex-manylinux_2_34_x86_64-
+
+      # What a restored cache is worth is readable before the build starts:
+      # each stage writes its stamp only after its driver has installed *and*
+      # validated, and the stamp carries the releases it was built from
+      # (ticket 11). A run whose log shows seven of these and then takes hours
+      # anyway has a stale name in one of them, which is the failure this
+      # makes visible rather than mysterious.
+      - name: Report what the cache restored
+        run: |
+          echo "stages already built in the restored prefix:"
+          ls -1a .build-cache/install 2>/dev/null | grep '\.installed$' || \
+            echo "  (none — this is a cold build)"
+
+      # The container *is* the build environment here, so build-wheel.sh runs
+      # directly rather than through scripts/build-in-container.sh, which is
+      # the local entry point that starts one.
+      - name: Build the wheel
+        env:
+          BUILD_ROOT: ${{ github.workspace }}/.build-cache
+        run: scripts/build-wheel.sh
+
+      # The cached tree is root-owned — the container build runs as root — and
+      # holds two wheelhouses. This is the publishable one; the other, under
+      # the install prefix, holds the petsc4py and slepc4py build artefacts
+      # that must never leave the build (spec §6).
+      - name: Collect the wheel
+        run: |
+          mkdir -p wheelhouse
+          cp .build-cache/wheelhouse/*.whl wheelhouse/
+          ls -l wheelhouse
+
+      # Two directories under the build root are rebuilt from scratch by the
+      # assembly step on every run, warm cache or not, and neither may be
+      # carried between runs. `assemble` is ~900 MB of staging scratch.
+      # `wheelhouse` is the finished artefact, and caching it is worse than
+      # wasteful: the assembly writes into it without pruning, so a restored
+      # one from an older version would put a second wheel beside the new one
+      # and the upload would carry both.
+      #
+      # `always()` because a failed build leaves the same scratch behind.
+      - name: Drop what the cache must not carry
+        if: always()
+        run: rm -rf .build-cache/assemble .build-cache/wheelhouse
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheelhouse
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  tests:
+    name: tests (python ${{ matrix.python-version }})
+    needs: wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      # One interpreter failing is a fact about that interpreter, and the
+      # other two are still worth knowing.
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.13', '3.14']
+    env:
+      # Out of the checkout: the suite makes venvs and unpacks a source tree,
+      # and neither belongs in a directory ruff and pytest walk.
+      WORK_DIR: ${{ runner.temp }}/wheeltest
+      WHEELHOUSE: ${{ github.workspace }}/wheelhouse
+    steps:
+      - uses: actions/checkout@v5
+
+      # The matrix axis. One abi3 wheel serves all three, and this is what
+      # proves that claim rather than assuming it.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheelhouse
+          path: wheelhouse
+
+      # The suite itself imports this repository's driver packages, which need
+      # one third-party package between them. It is installed into the
+      # interpreter that drives, never into the clean venv the wheel is
+      # installed in — that one gets everything from the wheel's own metadata.
+      - name: Install what the suite's driver needs
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install packaging
+
+      # The demo stage runs upstream's own demos, from the source tarball of
+      # the release the wheel mirrors. It is the same immutable tag every run,
+      # so it is downloaded once and kept.
+      - name: Cache the upstream demo sources
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/wheeltest/demo-source
+          key: demo-source-${{ hashFiles('dolfinx_solver/_version.py') }}
+
+      # PYTHONPATH is deliberately not set here: scripts/_wheel_venv.sh sets
+      # it to the repository root itself, and a second value on top of that is
+      # how the payload comes to be shadowed by this repository's own
+      # dolfinx_solver.
+      #
+      # The C compiler the stages need is the runner's: every form the smoke
+      # stage and the demos assemble is compiled at run time by ffcx through
+      # cffi.
+      - name: Run the wheel test suite
+        env:
+          PYTHON: python
+          DRIVER_PYTHON: python
+        run: scripts/test-wheel.sh

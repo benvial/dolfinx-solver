@@ -47,7 +47,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["abi3audit", "auditwheel>=6.0", "build", "mypy", "packaging", "pytest>=7.0", "ruff", "wheel"]
+dev = ["abi3audit", "auditwheel>=6.0", "build", "mypy", "packaging", "pytest>=7.0", "pyyaml", "ruff", "wheel"]
 
 [project.urls]
 "Bug Tracker" = "https://github.com/benvial/dolfinx-solver/issues"
