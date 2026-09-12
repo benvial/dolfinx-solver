@@ -1,8 +1,7 @@
 from pathlib import Path
 
 import pytest
-
-from dolfinx_solver import _bootstrap
+from bootstrap_shim import bootstrap_module as _bootstrap
 
 SITE_PACKAGES = Path("/venv/lib/python3.12/site-packages")
 PACKAGE_DIR = SITE_PACKAGES / "dolfinx_solver"

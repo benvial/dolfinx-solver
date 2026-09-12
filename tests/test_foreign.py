@@ -3,7 +3,8 @@
 import importlib.metadata
 import sys
 
-from dolfinx_solver import _bootstrap
+from bootstrap_shim import bootstrap_module as _bootstrap
+
 from wheeltest import foreign
 
 
