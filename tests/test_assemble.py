@@ -565,6 +565,28 @@ def test_a_dolfinx_that_reads_its_version_another_way_fails_the_build():
         assemble.substitute_version("__version__ = '0.12.0'\n")
 
 
+def test_the_packaged_dolfinx_finds_libpetsc_beside_the_payload():
+    """Upstream reads a PETSC_DIR the wheel has no honest value for (ticket 16)."""
+    upstream = (
+        "def get_petsc_lib():\n"
+        + assemble.PETSC_LIB_SUBSTITUTION[0]
+        + "\n    return pathlib.Path(exists_paths[0])\n"
+    )
+
+    substituted = assemble.substitute_petsc_lib(upstream)
+
+    assert f'"{LIBRARY_DIR}"' in substituted
+    assert f'"{petsc.soname()}"' in substituted
+    assert "get_config()" not in substituted
+    assert "exists_paths" in substituted
+
+
+def test_a_dolfinx_that_finds_libpetsc_another_way_fails_the_build():
+    """A wheel whose solver layer cannot import is worse than no wheel."""
+    with pytest.raises(ValueError, match="does not look up"):
+        assemble.substitute_petsc_lib("def get_petsc_lib():\n    return None\n")
+
+
 def test_two_copies_of_one_library_are_refused():
     """The failure an absolute RUNPATH in a staged library produces."""
     names = (

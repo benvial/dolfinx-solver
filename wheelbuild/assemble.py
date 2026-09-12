@@ -804,6 +804,75 @@ def substitute_version(text: str) -> str:
     return text.replace(original, replacement)
 
 
+#: How upstream's ``dolfinx/fem/petsc.py`` finds the PETSc shared library, and
+#: what that lookup becomes in the payload. Upstream asks petsc4py for its
+#: ``PETSC_DIR`` and joins ``lib/libpetsc.so`` onto it; this wheel blanks that
+#: value out of ``petsc.cfg`` because it holds the container's build prefix
+#: (:data:`CONFIG_FILES`), and there is no absolute path that would be right
+#: instead — the library ships inside the wheel, wherever pip puts it. So the
+#: candidate list becomes the one path the wheel has, resolved from the
+#: module's own location: ``dolfinx/fem/petsc.py`` is three directories below
+#: the wheel root, and the vendored library directory sits there beside the
+#: payload packages (ticket 16).
+#:
+#: Upstream's own "could not find" ``RuntimeError`` is left standing below
+#: this, so a wheel that somehow shipped without libpetsc still says so.
+PETSC_LIB_SUBSTITUTION = (
+    """    import petsc4py as _petsc4py
+
+    petsc_dir = _petsc4py.get_config()["PETSC_DIR"]
+    petsc_arch = _petsc4py.lib.getPathArchPETSc()[1]
+    candidate_paths = [
+        os.path.join(petsc_dir, petsc_arch, "lib", "libpetsc.so"),
+        os.path.join(petsc_dir, petsc_arch, "lib", "libpetsc.dylib"),
+    ]""",
+    (
+        "    # Substituted by wheelbuild.assemble: this wheel's PETSc is "
+        "vendored\n"
+        "    # inside it rather than installed under a PETSC_DIR, so the "
+        "petsc.cfg\n"
+        "    # upstream reads this from carries no prefix a user could reach.\n"
+        "    candidate_paths = [\n"
+        "        str(\n"
+        "            pathlib.Path(__file__).resolve().parents[2]\n"
+        f'            / "{bindings.VENDORED_LIBRARY_DIR.as_posix()}"\n'
+        f'            / "{petsc.soname()}"\n'
+        "        )\n"
+        "    ]"
+    ),
+)
+
+
+def substitute_petsc_lib(text: str) -> str:
+    """Return upstream's ``dolfinx/fem/petsc.py`` aimed at the vendored PETSc.
+
+    Args:
+        text: Contents of the staged ``dolfinx/fem/petsc.py``.
+
+    Returns:
+        The file with :data:`PETSC_LIB_SUBSTITUTION` applied.
+
+    Raises:
+        ValueError: When the lookup is not there to substitute. The class body
+            that calls it runs at import, so an unsubstituted wheel does not
+            fail at the call that needs the library — it fails at ``import
+            dolfinx.fem.petsc``, which is every solve, every assembly and
+            every boundary condition in the package. Shipping that is worse
+            than failing the build.
+    """
+    original, replacement = PETSC_LIB_SUBSTITUTION
+    if original not in text:
+        raise ValueError(
+            "the staged dolfinx/fem/petsc.py does not look up libpetsc the "
+            "way this assembly rewrites. DOLFINx resolves the PETSc shared "
+            "library through petsc4py's PETSC_DIR, which this wheel cannot "
+            "fill in, so the lookup is replaced with the vendored library's "
+            "own path; upstream having changed it means the new way has to "
+            "be handled here rather than shipped untouched."
+        )
+    return text.replace(original, replacement)
+
+
 def library_rpath(soname: str) -> str:
     """Return the search path a vendored library gets inside the wheel.
 
@@ -925,6 +994,10 @@ def stage(
     package_init = staging / dolfinx.IMPORT_NAME / "__init__.py"
     package_init.write_text(
         substitute_version(package_init.read_text(encoding="utf-8")), encoding="utf-8"
+    )
+    petsc_layer = staging / dolfinx.IMPORT_NAME / "fem" / "petsc.py"
+    petsc_layer.write_text(
+        substitute_petsc_lib(petsc_layer.read_text(encoding="utf-8")), encoding="utf-8"
     )
 
     (staging / NOTICES_PATH).write_text(
