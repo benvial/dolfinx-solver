@@ -189,7 +189,7 @@ def test_pruning_drops_the_transport_line_from_the_mpich_halves():
     assert assemble.pruned(mpich.FORTRAN_SONAME, needed) == frozenset(
         {"libmpi.so.12", "libgfortran.so.5", "libc.so.6"}
     )
-    assert assemble.pruned(assemble.CXX_SONAME, needed) == frozenset(
+    assert assemble.pruned(mpich.CXX_SONAME, needed) == frozenset(
         {"libmpi.so.12", "libgfortran.so.5", "libc.so.6"}
     )
 
@@ -274,7 +274,7 @@ def test_a_dependency_the_library_does_not_name_is_not_looked_for(
     staged = tmp_path / "lib"
     staged.mkdir()
     (staged / mpich.FORTRAN_SONAME).touch()
-    (staged / assemble.CXX_SONAME).touch()
+    (staged / mpich.CXX_SONAME).touch()
     monkeypatch.setattr(
         assemble.elf, "read_dynamic", lambda _: (None, frozenset({"libmpi.so.12"}))
     )

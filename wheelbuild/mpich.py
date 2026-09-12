@@ -1,22 +1,36 @@
-"""Build the Fortran half of MPICH, which is all of MPI this wheel vendors.
+"""Build MPICH's binding shims, which are all of MPI this wheel vendors.
 
 The runtime ``libmpi`` comes from the PyPI ``mpich`` wheel and is shared with
-mpi4py inside one process (spec §5, ADR-0002). That wheel is C-only: no
-``libmpifort``, no ``mpif.h``, no ``mpi.mod``. PETSc's Fortran packages —
-MUMPS, ScaLAPACK, SuperLU_DIST — need the headers to compile and the library
-to run, so MPICH is compiled here with Fortran enabled, its ``libmpi`` is
-thrown away, and only the Fortran half is kept.
+mpi4py inside one process (spec §5, ADR-0002). That wheel is C-only: it ships
+``libmpi``, the C headers and hydra, and neither of MPICH's language binding
+libraries (ADR-0001 has the inventory). Two things in this stack need what it
+leaves out, so MPICH is compiled here, its ``libmpi`` is thrown away, and the
+shims that translate to it are kept:
 
-That split is the whole risk of this step. The two halves are built by
-different people at different times and bound together on the user's machine
-by a soname, ``libmpi.so.12``, that MPICH freezes across major series — so the
-loader will pair a ``libmpifort`` from one series with a ``libmpi`` from
-another without complaint, and the mismatch surfaces as an undefined-symbol
-error on first import. :func:`validate` is where that is caught instead: it
-compares the symbols our ``libmpifort`` references against the ones the PyPI
-wheel's ``libmpi`` exports, which is the check that actually proves the
+- ``libmpifort``, with ``mpif.h`` and ``mpi.mod``, for PETSc's Fortran
+  packages — MUMPS, ScaLAPACK, SuperLU_DIST — which need the headers to
+  compile and the library to run.
+- ``libmpicxx``, because MPICH's ``mpicxx`` wrapper puts ``-lmpicxx`` on every
+  C++ link and ADIOS2's C++ libraries are therefore linked against it. Nothing
+  in the wheel calls MPI's C++ bindings, but the ``DT_NEEDED`` entry is real
+  and the PyPI wheel cannot satisfy it (spec §5 as amended 2026-09-12,
+  ticket 13).
+
+That split is the whole risk of this step. The halves are built by different
+people at different times and bound together on the user's machine by a
+soname, ``libmpi.so.12``, that MPICH freezes across major series — so the
+loader will pair a shim from one series with a ``libmpi`` from another without
+complaint, and the mismatch surfaces as an undefined-symbol error on first
+import. :func:`validate` is where that is caught instead: it compares the
+symbols each vendored shim references against the ones the PyPI wheel's
+``libmpi`` exports, which is the check that actually proves the
 ``mpich>=5.0,<6`` pin (ADR-0001). ``wheelbuild.pin_check`` holds the other
 end, that the declared pin still names the series built here.
+
+What ships is not quite what this build produces: both shims carry MPICH's
+whole ch4 device link line in their ``DT_NEEDED`` and call into none of it, so
+the wheel assembly removes those six entries against symbol evidence
+(``wheelbuild.assemble.OVER_LINKED``, ADR-0003).
 
 Every fact the checks work from is read out of the installed files —
 ``include/mpi.h`` for the release, the ELF headers for the linkage — and never
@@ -57,6 +71,20 @@ MPI_SONAME = "libmpi.so.12"
 #: The Fortran library that is the point of this whole step.
 FORTRAN_SONAME = "libmpifort.so.12"
 
+#: The C++ binding library, vendored for the same reason as the Fortran one —
+#: the PyPI ``mpich`` wheel does not ship it and something in the payload names
+#: it. Unlike ``libmpifort`` it was not asked for: ``mpicxx`` adds ``-lmpicxx``
+#: to every C++ link, so ADIOS2 acquired the dependency by being linked with
+#: the wrapper. Shipping it rather than engineering it away is ticket 13's
+#: decision, recorded in spec §5's 2026-09-12 amendment.
+CXX_SONAME = "libmpicxx.so.12"
+
+#: The binding libraries the wheel vendors. Both are shims over ``libmpi``'s
+#: PMPI entry points, both bind it by soname, and both are checked the same
+#: way — which is the only reason they are a collection rather than two
+#: constants.
+SHIM_SONAMES = (FORTRAN_SONAME, CXX_SONAME)
+
 #: The PyPI wheel's own ``configure`` line, as ``mpichversion`` reports it
 #: (ADR-0001). Our build adds Fortran to it and changes nothing else: a
 #: different device or process manager is a different ``libmpi``, and the
@@ -72,6 +100,8 @@ REQUIRED_ARTEFACTS = (
     Path("include/mpif.h"),
     Path(f"lib/{FORTRAN_SONAME}"),
     Path("lib/libmpifort.so"),
+    Path(f"lib/{CXX_SONAME}"),
+    Path("lib/libmpicxx.so"),
     Path(f"lib/{MPI_SONAME}"),
 )
 
@@ -84,9 +114,17 @@ F08_PATTERNS = ("include/*f08*.mod", "include/*f08*.h", "lib/*f08*")
 #: What the wheel keeps out of the install prefix. Deliberately no
 #: ``libmpi``: a grafted copy would be a second MPI runtime in a process that
 #: already has mpi4py's (spec §5).
+#:
+#: This is the record of the decision, not the mechanism that carries it out.
+#: The payload is computed — it is the ``DT_NEEDED`` closure of the three
+#: extension modules, which is how ``libmpicxx`` came to be in it at all — so
+#: what this list has to stay true to is the wheel, and
+#: ``wheelbuild.notices`` is what fails the build when it does not.
 VENDORED_ARTEFACTS = (
     Path(f"lib/{FORTRAN_SONAME}"),
     Path("lib/libmpifort.so"),
+    Path(f"lib/{CXX_SONAME}"),
+    Path("lib/libmpicxx.so"),
     Path("include/mpif.h"),
     Path("include/mpi.mod"),
 )
@@ -98,21 +136,36 @@ _VERSION_DEFINE = re.compile(
 )
 
 
+class Shim(NamedTuple):
+    """What one vendored binding library says about itself.
+
+    Attributes:
+        soname: The library's own soname, used to name it in a message.
+        needed: Its ``DT_NEEDED`` entries. ``libmpi``'s soname has to be among
+            them, because binding by soname is how the shim reaches the copy
+            mpi4py already loaded (ADR-0002).
+        undefined: Symbols it references and does not define, which the
+            runtime ``libmpi`` will have to supply.
+    """
+
+    soname: str
+    needed: frozenset[str]
+    undefined: frozenset[str]
+
+
 class Build(NamedTuple):
     """What a built MPICH prefix says about itself.
 
     Attributes:
         version: The release, from ``include/mpi.h``.
         mpi_soname: ``DT_SONAME`` of the ``libmpi`` this build produced.
-        fortran_needed: ``DT_NEEDED`` entries of the vendored ``libmpifort``.
-        fortran_undefined: Symbols that ``libmpifort`` references and does not
-            define, which the runtime ``libmpi`` will have to supply.
+        shims: One entry per vendored binding library, in
+            :data:`SHIM_SONAMES` order.
     """
 
     version: str | None
     mpi_soname: str | None
-    fortran_needed: frozenset[str]
-    fortran_undefined: frozenset[str]
+    shims: tuple[Shim, ...]
 
 
 def series(version: str) -> str:
@@ -159,6 +212,11 @@ def configure_arguments(*, source_dir: Path, prefix: Path) -> list[str]:
         # PETSc's Fortran packages, mpi.mod (f90) for the ones that prefer the
         # module, and not the f08 bindings, whose types the ABI does not cover.
         "--disable-f08",
+        # MPICH's default, named because the wheel now depends on it: ADIOS2
+        # is linked through the mpicxx wrapper and acquires libmpicxx, so
+        # turning the C++ bindings off here would break that link rather than
+        # tidy the wheel (ticket 13, spec §8's explicit-flags principle).
+        "--enable-cxx",
     ]
 
 
@@ -213,24 +271,40 @@ def observe(prefix: Path) -> Build:
         prefix: MPICH install prefix.
 
     Returns:
-        The facts :func:`build_problem` and :func:`interop_problem` judge.
+        The facts :func:`build_problem` and :func:`interop_problem` judge,
+        with one :class:`Shim` per vendored binding library.
 
     Raises:
         subprocess.CalledProcessError: When the ELF tools cannot read a
             library.
     """
-    fortran_library = prefix / "lib" / FORTRAN_SONAME
     mpi_soname, _ = elf.read_dynamic(prefix / "lib" / MPI_SONAME)
-    _, fortran_needed = elf.read_dynamic(fortran_library)
-    _, fortran_undefined = elf.read_symbols(fortran_library)
     return Build(
         version=version_in_header(
             (prefix / "include" / "mpi.h").read_text(encoding="utf-8")
         ),
         mpi_soname=mpi_soname,
-        fortran_needed=fortran_needed,
-        fortran_undefined=frozenset(fortran_undefined),
+        shims=tuple(observe_shim(prefix, soname) for soname in SHIM_SONAMES),
     )
+
+
+def observe_shim(prefix: Path, soname: str) -> Shim:
+    """Read what one vendored binding library says about itself.
+
+    Args:
+        prefix: MPICH install prefix.
+        soname: The library's soname, as it appears in ``lib/``.
+
+    Returns:
+        Its linkage and its unresolved symbols.
+
+    Raises:
+        subprocess.CalledProcessError: When the ELF tools cannot read it.
+    """
+    library = prefix / "lib" / soname
+    _, needed = elf.read_dynamic(library)
+    _, undefined = elf.read_symbols(library)
+    return Shim(soname=soname, needed=needed, undefined=frozenset(undefined))
 
 
 def build_problem(build: Build, *, expected_version: str = MPICH_VERSION) -> str | None:
@@ -267,46 +341,58 @@ def build_problem(build: Build, *, expected_version: str = MPICH_VERSION) -> str
             "wheel's libmpi can never satisfy."
         )
 
-    if MPI_SONAME not in build.fortran_needed:
+    if {shim.soname for shim in build.shims} != set(SHIM_SONAMES):
         return (
-            f"the vendored {FORTRAN_SONAME} does not ask the loader for "
-            f"{MPI_SONAME} (it needs "
-            f"{', '.join(sorted(build.fortran_needed)) or 'nothing'}). The "
-            "Fortran half is only usable because it binds the C half by that "
-            "soname, which is how it reaches the libmpi mpi4py already "
-            "loaded (ADR-0002)."
+            f"this build reports {len(build.shims)} binding shim(s) "
+            f"({', '.join(shim.soname for shim in build.shims) or 'none'}), "
+            f"but the wheel vendors {', '.join(SHIM_SONAMES)} (spec §5). "
+            "Every one of them has to be read and checked, or the wheel ships "
+            "a library nothing proved against the runtime libmpi."
         )
+
+    for shim in build.shims:
+        if MPI_SONAME not in shim.needed:
+            return (
+                f"the vendored {shim.soname} does not ask the loader for "
+                f"{MPI_SONAME} (it needs "
+                f"{', '.join(sorted(shim.needed)) or 'nothing'}). A binding "
+                "shim is only usable because it binds the C half by that "
+                "soname, which is how it reaches the libmpi mpi4py already "
+                "loaded (ADR-0002)."
+            )
     return None
 
 
 def interop_problem(
-    fortran_undefined: Iterable[str],
+    shim: Shim,
     runtime_exported: Iterable[str],
 ) -> str | None:
-    """Report symbols the vendored ``libmpifort`` needs and ``libmpi`` lacks.
+    """Report symbols a vendored shim needs and the runtime ``libmpi`` lacks.
 
     This is the check ADR-0001 rests the pin on: not that the version numbers
     look compatible, but that the library a user's ``pip install`` actually
-    resolves can satisfy every MPI symbol the Fortran half references.
+    resolves can satisfy every MPI symbol the shim references. It applies
+    unchanged to ``libmpicxx``, which has the same shape of dependency on the
+    same library (ticket 13).
 
     Args:
-        fortran_undefined: Undefined symbols of the vendored ``libmpifort``.
+        shim: One vendored binding library, from :func:`observe_shim`.
         runtime_exported: Symbols the PyPI wheel's ``libmpi`` defines.
 
     Returns:
         A message naming the unsatisfied symbols, or ``None`` when the
         runtime covers all of them.
     """
-    needed = elf.mpi_symbols(fortran_undefined)
+    needed = elf.mpi_symbols(shim.undefined)
     missing = sorted(needed - set(runtime_exported))
     if not missing:
         return None
     return (
-        f"the vendored {FORTRAN_SONAME} references {len(missing)} MPI "
+        f"the vendored {shim.soname} references {len(missing)} MPI "
         f"symbol(s) the PyPI mpich wheel's {MPI_SONAME} does not export: "
         f"{', '.join(missing)}. The soname is the same either way, so the "
         "loader would bind them and fail at the user's first import. Build "
-        "the Fortran half from the MPICH release the wheel ships, and move "
+        "the binding shims from the MPICH release the wheel ships, and move "
         "the mpich pin with it (ADR-0001)."
     )
 
@@ -330,7 +416,8 @@ def validate(
         FileNotFoundError: When the install is missing something the build or
             the wheel needs.
         ValueError: When the build carries F08 bindings, is not the pinned
-            MPICH, or needs symbols the runtime ``libmpi`` does not export.
+            MPICH, or has a shim needing symbols the runtime ``libmpi`` does
+            not export.
     """
     missing = missing_artefacts(prefix)
     if missing:
@@ -352,7 +439,14 @@ def validate(
 
     problem = build_problem(build)
     if problem is None:
-        problem = interop_problem(build.fortran_undefined, runtime_exported)
+        problem = next(
+            (
+                message
+                for shim in build.shims
+                if (message := interop_problem(shim, runtime_exported)) is not None
+            ),
+            None,
+        )
     if problem is not None:
         raise ValueError(problem)
     return prefix
@@ -399,7 +493,7 @@ def run(
     runtime_libmpi: Path,
     jobs: int,
 ) -> Path:
-    """Configure, build, install and validate the Fortran half of MPICH.
+    """Configure, build, install and validate MPICH's binding shims.
 
     The ``libmpi`` this produces stays in the prefix — PETSc and DOLFINx link
     against it during the build, and ``auditwheel repair --exclude`` keeps it
@@ -462,8 +556,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     print(
-        f"MPICH {MPICH_VERSION} Fortran bindings installed into {prefix}; "
-        f"every MPI symbol {FORTRAN_SONAME} needs is exported by "
+        f"MPICH {MPICH_VERSION} binding shims installed into {prefix}; "
+        f"every MPI symbol {' and '.join(SHIM_SONAMES)} need is exported by "
         f"{args.runtime_libmpi}"
     )
     return 0

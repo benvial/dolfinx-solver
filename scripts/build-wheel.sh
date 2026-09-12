@@ -121,7 +121,7 @@ echo "==> install prefix layout"
 # lib and lib64 become one directory before anything installs into either.
 python -m wheelbuild.prefix --prefix "$install_prefix"
 
-echo "==> MPICH (Fortran half only; the PyPI wheel supplies libmpi)"
+echo "==> MPICH (binding shims only; the PyPI wheel supplies libmpi)"
 mpich_version="$(driver 'from wheelbuild.mpich import MPICH_VERSION; print(MPICH_VERSION)')"
 mpich_url="$(driver 'from wheelbuild.mpich import source_url; print(source_url())')"
 [[ -n "$mpich_version" ]] || { echo "could not read MPICH_VERSION" >&2; exit 1; }

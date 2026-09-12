@@ -1,8 +1,11 @@
-"""The Fortran-half MPICH build: what it configures, and what it must prove.
+"""The binding-half MPICH build: what it configures, and what it must prove.
 
-The wheel vendors `libmpifort` and nothing else of MPICH (ADR-0001), so the
-checks here are about the seam between the half we build and the `libmpi` the
-PyPI `mpich` wheel supplies at run time.
+The wheel vendors MPICH's two binding shims — `libmpifort` and `libmpicxx` —
+and no `libmpi` of its own (ADR-0001, ADR-0003, ticket 13), so the checks here
+are about the seam between the halves we build and the `libmpi` the PyPI
+`mpich` wheel supplies at run time. Both shims are checked the same way,
+because both fail the same way: they bind `libmpi` by a soname MPICH freezes
+across series, so a mismatch is a clean link and a broken first import.
 """
 
 from pathlib import Path
@@ -12,17 +15,42 @@ import pytest
 from wheelbuild import mpich
 
 # The facts a correct build reports about itself: the release from mpi.h, the
-# soname its libmpi declares, and what the vendored libmpifort asks the loader
-# for and leaves undefined.
+# soname its libmpi declares, and what each vendored shim asks the loader for
+# and leaves undefined.
 GOOD_BUILD = mpich.Build(
     version=mpich.MPICH_VERSION,
     mpi_soname=mpich.MPI_SONAME,
-    fortran_needed=frozenset({mpich.MPI_SONAME, "libgfortran.so.5", "libc.so.6"}),
-    fortran_undefined=frozenset({"MPI_Init", "MPIR_Comm_free_impl", "memcpy"}),
+    shims=(
+        mpich.Shim(
+            soname=mpich.FORTRAN_SONAME,
+            needed=frozenset({mpich.MPI_SONAME, "libgfortran.so.5", "libc.so.6"}),
+            undefined=frozenset({"MPI_Init", "MPIR_Comm_free_impl", "memcpy"}),
+        ),
+        mpich.Shim(
+            soname=mpich.CXX_SONAME,
+            needed=frozenset({mpich.MPI_SONAME, "libstdc++.so.6", "libc.so.6"}),
+            undefined=frozenset({"MPI_Finalize", "_ZdlPv"}),
+        ),
+    ),
 )
 
 # What `libmpi.so.12` from the PyPI mpich wheel exports, in miniature.
 RUNTIME_EXPORTED = frozenset({"MPI_Init", "MPIR_Comm_free_impl", "MPI_Finalize"})
+
+
+def _shim(build: mpich.Build, soname: str) -> mpich.Shim:
+    """The shim of `build` that declares `soname`."""
+    return next(shim for shim in build.shims if shim.soname == soname)
+
+
+def _replacing(build: mpich.Build, soname: str, **changes) -> mpich.Build:
+    """`build` with one of its shims changed and the other left alone."""
+    return build._replace(
+        shims=tuple(
+            shim._replace(**changes) if shim.soname == soname else shim
+            for shim in build.shims
+        )
+    )
 
 
 def _install(prefix: Path, relatives=mpich.REQUIRED_ARTEFACTS) -> Path:
@@ -148,28 +176,37 @@ def test_a_libmpi_with_a_different_soname_is_reported():
     assert mpich.MPI_SONAME in problem
 
 
-def test_a_libmpifort_that_does_not_bind_libmpi_is_reported():
+@pytest.mark.parametrize("soname", [mpich.FORTRAN_SONAME, mpich.CXX_SONAME])
+def test_a_shim_that_does_not_bind_libmpi_is_reported(soname):
     """Binding by soname is how it reaches the libmpi mpi4py loaded first."""
     problem = mpich.build_problem(
-        GOOD_BUILD._replace(fortran_needed=frozenset({"libc.so.6"}))
+        _replacing(GOOD_BUILD, soname, needed=frozenset({"libc.so.6"}))
     )
 
     assert problem is not None
     assert mpich.MPI_SONAME in problem
+    assert soname in problem
 
 
-def test_a_libmpifort_the_runtime_libmpi_satisfies_passes():
-    assert mpich.interop_problem(GOOD_BUILD.fortran_undefined, RUNTIME_EXPORTED) is None
+@pytest.mark.parametrize("soname", [mpich.FORTRAN_SONAME, mpich.CXX_SONAME])
+def test_a_shim_the_runtime_libmpi_satisfies_passes(soname):
+    assert mpich.interop_problem(_shim(GOOD_BUILD, soname), RUNTIME_EXPORTED) is None
 
 
-def test_a_symbol_the_runtime_libmpi_does_not_export_is_reported():
+@pytest.mark.parametrize("soname", [mpich.FORTRAN_SONAME, mpich.CXX_SONAME])
+def test_a_symbol_the_runtime_libmpi_does_not_export_is_reported(soname):
     """This is the check that actually proves the pin (ADR-0001)."""
     problem = mpich.interop_problem(
-        fortran_undefined={"MPI_Init", "MPIR_Removed_in_5_0"},
+        mpich.Shim(
+            soname=soname,
+            needed=frozenset({mpich.MPI_SONAME}),
+            undefined=frozenset({"MPI_Init", "MPIR_Removed_in_5_0"}),
+        ),
         runtime_exported={"MPI_Init"},
     )
 
     assert problem is not None
+    assert soname in problem
     assert "MPIR_Removed_in_5_0" in problem
     assert "MPI_Init" not in problem.replace("MPIR_Removed_in_5_0", "")
 
@@ -177,7 +214,11 @@ def test_a_symbol_the_runtime_libmpi_does_not_export_is_reported():
 def test_symbols_libmpi_was_never_going_to_supply_are_not_its_problem():
     """libc and libgfortran supply these; auditwheel resolves them separately."""
     problem = mpich.interop_problem(
-        fortran_undefined={"memcpy", "_gfortran_st_write", "__gmon_start__"},
+        mpich.Shim(
+            soname=mpich.FORTRAN_SONAME,
+            needed=frozenset({mpich.MPI_SONAME}),
+            undefined=frozenset({"memcpy", "_gfortran_st_write", "__gmon_start__"}),
+        ),
         runtime_exported=set(),
     )
 
@@ -212,17 +253,39 @@ def test_validate_refuses_a_wrong_series(tmp_path):
         mpich.validate(prefix, GOOD_BUILD._replace(version="4.2.3"), RUNTIME_EXPORTED)
 
 
-def test_validate_refuses_a_libmpifort_the_runtime_cannot_satisfy(tmp_path):
+@pytest.mark.parametrize("soname", [mpich.FORTRAN_SONAME, mpich.CXX_SONAME])
+def test_validate_refuses_a_shim_the_runtime_cannot_satisfy(tmp_path, soname):
     prefix = _install(tmp_path)
-    build = GOOD_BUILD._replace(fortran_undefined=frozenset({"MPIR_Gone"}))
+    build = _replacing(GOOD_BUILD, soname, undefined=frozenset({"MPIR_Gone"}))
 
     with pytest.raises(ValueError, match="MPIR_Gone"):
         mpich.validate(prefix, build, RUNTIME_EXPORTED)
 
 
-def test_only_the_fortran_half_is_vendored():
-    """The PyPI wheel supplies libmpi; a second copy would be a second MPI."""
+def test_both_binding_shims_are_vendored_and_libmpi_is_not():
+    """The PyPI wheel supplies libmpi; a second copy would be a second MPI.
+
+    It supplies neither shim, which is why both ship (spec §5 as amended
+    2026-09-12, ticket 13).
+    """
     vendored = [str(relative) for relative in mpich.VENDORED_ARTEFACTS]
 
-    assert any("libmpifort" in name for name in vendored)
+    assert any(name.endswith(mpich.FORTRAN_SONAME) for name in vendored)
+    assert any(name.endswith(mpich.CXX_SONAME) for name in vendored)
     assert not any(name.endswith(mpich.MPI_SONAME) for name in vendored)
+
+
+def test_a_build_without_the_cxx_shim_is_reported(tmp_path):
+    """ADIOS2's C++ libraries name it, so an install without it is incomplete."""
+    cxx_library = Path(f"lib/{mpich.CXX_SONAME}")
+
+    missing = mpich.missing_artefacts(_install(tmp_path, _without(cxx_library)))
+
+    assert missing == [cxx_library]
+
+
+def test_validate_refuses_an_install_missing_the_cxx_shim(tmp_path):
+    prefix = _install(tmp_path, _without(Path(f"lib/{mpich.CXX_SONAME}")))
+
+    with pytest.raises(FileNotFoundError, match="libmpicxx"):
+        mpich.validate(prefix, GOOD_BUILD, RUNTIME_EXPORTED)

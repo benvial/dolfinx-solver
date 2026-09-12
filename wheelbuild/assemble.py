@@ -105,15 +105,6 @@ EXCLUDED_PAYLOAD_NAMES = frozenset({"__pycache__", "basix", "dolfinx_solver"})
 #: the PyPI ``mpich`` wheel mpi4py loads first, libbasix by ``fenics-basix``.
 EXCLUDED_SONAMES = ("libmpi.so.*", "libbasix.so*")
 
-#: The C++ binding half of MPICH, which arrives in the payload because
-#: MPICH's ``mpicxx`` wrapper puts ``-lmpicxx`` on every C++ link and ADIOS2's
-#: C++ libraries are therefore linked against it. Spelled here rather than in
-#: :mod:`wheelbuild.mpich`, whose ``VENDORED_ARTEFACTS`` lists the Fortran
-#: half alone: whether the MPI story is rewritten to say the wheel vendors
-#: both is ticket 13's question, and this driver only refuses to graft it
-#: silently.
-CXX_SONAME = "libmpicxx.so.12"
-
 #: The transport link line MPICH's wrappers add, as sonames.
 _DEVICE_DEPENDENCIES = (
     "libucp.so.0",
@@ -136,7 +127,7 @@ _DEVICE_DEPENDENCIES = (
 #: dependency.
 OVER_LINKED = {
     mpich.FORTRAN_SONAME: _DEVICE_DEPENDENCIES,
-    CXX_SONAME: _DEVICE_DEPENDENCIES,
+    mpich.CXX_SONAME: _DEVICE_DEPENDENCIES,
 }
 
 #: The libraries a finished wheel is checked for, and why each is refused.

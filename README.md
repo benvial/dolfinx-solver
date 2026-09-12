@@ -31,15 +31,15 @@ friends). `fenics-basix`, `fenics-ffcx` and `fenics-ufl` come from PyPI at
 upstream's own pins — they are never re-vendored.
 
 MPI is **not** vendored: the wheel depends on the PyPI
-[`mpich`](https://pypi.org/project/mpich/) wheel and only carries MPICH's
-Fortran bindings, so DOLFINx, mpi4py and petsc4py all share one MPI in one
-process.
+[`mpich`](https://pypi.org/project/mpich/) wheel and carries only MPICH's
+Fortran and C++ binding libraries, which that wheel does not ship. DOLFINx,
+mpi4py and petsc4py therefore all share one MPI in one process.
 
 ## Requirements and constraints
 
 - Linux x86_64, `manylinux_2_34`, Python 3.12+ (one `cp312-abi3` wheel).
 - The PyPI `mpich` wheel, 5.0 series (installed for you). The wheel vendors
-  MPICH's Fortran bindings built against that series, so neither an older
+  MPICH's binding libraries built against that series, so neither an older
   `mpich` nor another MPI — Open MPI, Intel MPI — will do.
 - A virtual-environment-style prefix; install into an environment of its own.
 - Do not co-install the PyPI `petsc`, `petsc4py`, `slepc` or `slepc4py`
