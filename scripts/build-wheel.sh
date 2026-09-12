@@ -240,7 +240,19 @@ adios2_dir="$(driver 'from wheelbuild.adios2 import source_dir_name; print(sourc
 [[ -n "$adios2_version" ]] || { echo "could not read ADIOS2_VERSION" >&2; exit 1; }
 adios2_source="$build_root/$adios2_dir"
 fetch_source "$adios2_url" "$adios2_source"
-adios2_stamp="$install_prefix/.adios2-$adios2_version.installed"
+# Stamped on two releases it does not build: the PETSc whose configure put the
+# parallel HDF5 in this prefix, which wheelbuild/adios2.py configures against
+# with HDF5_ROOT and HDF5_PREFER_PARALLEL, and the MPICH whose mpicc/mpicxx
+# compile it — libadios2_cxx_mpi is linked against that MPICH's headers and that
+# libmpi's exported symbols, and comes out carrying libmpicxx.so.12 in its
+# DT_NEEDED (spec §5, ADR-0001: the soname is frozen across the series, the
+# exported symbols are not). A bump of either release moves something ADIOS2 was
+# linked against, and adios2.validate reads the installed features and sonames
+# rather than whether what they were linked against is still there, so without
+# these names a warm prefix would re-check a stale ADIOS2 instead of relinking
+# it. Not stamped on the scalar type: this is the one PETSc-bound stage that
+# never links libpetsc, and the HDF5 it does link is the same library either way.
+adios2_stamp="$install_prefix/.adios2-$adios2_version-petsc-$petsc_version-mpich-$mpich_version.installed"
 if [[ -f "$adios2_stamp" ]]; then
   echo "    cached in $install_prefix; re-checking what it says about itself"
   python -m wheelbuild.adios2 --validate-only --prefix "$install_prefix"
@@ -260,7 +272,14 @@ kahip_dir="$(driver 'from wheelbuild.kahip import source_dir_name; print(source_
 [[ -n "$kahip_version" ]] || { echo "could not read KAHIP_VERSION" >&2; exit 1; }
 kahip_source="$build_root/$kahip_dir"
 fetch_source "$kahip_url" "$kahip_source"
-kahip_stamp="$install_prefix/.kahip-$kahip_version.installed"
+# Stamped on the MPICH release as well: ParHIP is compiled with this prefix's
+# mpicc/mpicxx, against that MPICH's headers and that libmpi's exported
+# symbols, which is the one input from the prefix KaHIP has. The soname in
+# libparhip_interface's DT_NEEDED is not the argument — it stays libmpi.so.12
+# across the series (ADR-0001) — the symbols behind it are. Nothing else here
+# comes from the prefix: KaHIP builds no PETSc package and links no libpetsc,
+# so neither the PETSc release nor its scalar type belongs in this name.
+kahip_stamp="$install_prefix/.kahip-$kahip_version-mpich-$mpich_version.installed"
 if [[ -f "$kahip_stamp" ]]; then
   echo "    cached in $install_prefix; re-checking it is portable and MPI-linked"
   python -m wheelbuild.kahip --validate-only --prefix "$install_prefix"

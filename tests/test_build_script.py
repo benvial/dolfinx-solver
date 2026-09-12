@@ -86,12 +86,58 @@ def test_no_command_in_the_script_spells_the_scalar_type_itself(script):
     assert commands == []
 
 
-def test_every_stamp_bound_to_petsc_names_the_scalar_type(stamps):
-    """PetscScalar is baked into everything below PETSc, sonames and all."""
-    bound = {stage: path for stage, path in stamps.items() if "$petsc_version" in path}
-    assert set(bound) == {"petsc", "slepc", "bindings", "dolfinx"}
-    for stage_name, path in bound.items():
-        assert "$scalar_type" in path, f"{stage_name} stamp is scalar-blind"
+def test_every_stamp_bound_to_petsc_names_the_release(stamps):
+    """Anything built against something PETSc's configure produced.
+
+    ADIOS2 is in the list for its HDF5: `-DHDF5_ROOT=$prefix` with
+    `-DHDF5_PREFER_PARALLEL=ON` resolves the parallel HDF5 PETSc built, so a
+    PETSc bump moves a library ADIOS2 is linked against.
+    """
+    bound = {stage for stage, path in stamps.items() if "$petsc_version" in path}
+    assert bound == {"petsc", "slepc", "bindings", "adios2", "dolfinx"}
+
+
+def test_every_stamp_carrying_petsc_scalars_names_the_scalar_type(stamps):
+    """PetscScalar is baked into everything that links libpetsc, sonames and all.
+
+    ADIOS2 is the one PETSc-bound stage that does not: it links the prefix's
+    HDF5 and never libpetsc, and HDF5 is built the same way for either scalar
+    type, so a flip would rebuild it for nothing.
+    """
+    for stage_name in ("petsc", "slepc", "bindings", "dolfinx"):
+        assert "$scalar_type" in stamps[stage_name], f"{stage_name} is scalar-blind"
+    assert "$scalar_type" not in stamps["adios2"]
+
+
+def test_every_stamp_bound_to_mpich_names_the_release(stamps):
+    """The stages compiled with the prefix's `mpicc`/`mpicxx`, or linked to it.
+
+    ADIOS2 and KaHIP are compiled with the prefix's `mpicc`/`mpicxx`, against
+    that MPICH's headers and that `libmpi`'s exported symbols — which is what a
+    bump moves, the soname being frozen across the pinned series (ADR-0001). So
+    both have to relink rather than be re-checked.
+
+    The four stages missing from this set are compiled the same way, and
+    whether they should name MPICH too is a live question rather than a
+    decision this test records: PETSc's rebuild is hours where these two are
+    minutes. Flipping the assertion is how that work announces itself
+    (ticket 19).
+    """
+    bound = {stage for stage, path in stamps.items() if "$mpich_version" in path}
+    assert bound == {"mpich", "adios2", "kahip"}
+
+
+def test_the_adios2_stamp_names_the_petsc_and_the_mpich_it_was_built_against(stamps):
+    assert stamps["adios2"] == (
+        "$install_prefix/.adios2-$adios2_version"
+        "-petsc-$petsc_version-mpich-$mpich_version.installed"
+    )
+
+
+def test_the_kahip_stamp_names_the_mpich_it_was_built_against(stamps):
+    assert stamps["kahip"] == (
+        "$install_prefix/.kahip-$kahip_version-mpich-$mpich_version.installed"
+    )
 
 
 def test_the_petsc_driver_is_passed_the_scalar_type_on_both_paths(script):
