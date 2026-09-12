@@ -7,11 +7,12 @@
 # already in the cached install prefix — so a warm cache re-proves the stack
 # instead of recompiling it.
 #
-# Stages so far: the Fortran half of MPICH, then PETSc with its whole
-# --download-* dependency stack, then SLEPc against that PETSc, then our own
-# petsc4py and slepc4py against both, then ADIOS2 and KaHIP, then DOLFINx —
-# its C++ core and its nanobind bindings — against all of it. The wheel
-# assembly, the notices and the audits follow in a later ticket.
+# Stages: the Fortran half of MPICH, then PETSc with its whole --download-*
+# dependency stack, then SLEPc against that PETSc, then our own petsc4py and
+# slepc4py against both, then ADIOS2 and KaHIP, then DOLFINx — its C++ core
+# and its nanobind bindings — against all of it, and finally the wheel: the
+# payload, the harvested notices, auditwheel repair, abi3audit, and an install
+# into a clean venv that imports the stack back out.
 #
 # Environment:
 #   BUILD_ROOT   scratch root for sources, build trees and the install prefix
@@ -75,15 +76,15 @@ export PATH="/usr/lib64/ccache:$PATH"
 echo "==> build environment"
 [[ -x "$venv/bin/python" ]] || "$base_python" -m venv "$venv"
 "$venv/bin/pip" install --quiet --upgrade pip
-# build/auditwheel/packaging/wheel drive the packaging; setuptools, Cython and
-# numpy are what petsc4py's and slepc4py's setup.py need, and they are
-# installed here rather than fetched per build so --no-build-isolation can keep
-# the bindings' build on versions this build controls. mpi4py is the runtime
-# half of the import check: it is what dlopens the PyPI mpich wheel's libmpi
-# before any compiled module of ours (spec §5).
+# build, auditwheel, abi3audit, packaging and wheel drive the packaging;
+# setuptools, Cython and numpy are what petsc4py's and slepc4py's setup.py
+# need, and they are installed here rather than fetched per build so
+# --no-build-isolation can keep the bindings' build on versions this build
+# controls. mpi4py is the runtime half of the import check: it is what dlopens
+# the PyPI mpich wheel's libmpi before any compiled module of ours (spec §5).
 "$venv/bin/pip" install --quiet \
-  build auditwheel packaging wheel setuptools "cython>=3" "numpy>=2" mpi4py \
-  "scikit-build-core>=0.11"
+  build auditwheel abi3audit packaging wheel setuptools "cython>=3" \
+  "numpy>=2" mpi4py "scikit-build-core>=0.11"
 # nanobind is pinned, not floored: our DOLFINx bindings and the published
 # fenics-basix extension share a nanobind type registry only when their ABI
 # tags agree, and a mismatch surfaces as a TypeError in the user's first
@@ -285,5 +286,23 @@ else
     --jobs "$jobs"
   touch "$dolfinx_stamp"
 fi
+
+echo "==> wheel (payload, notices, repair, audits, clean-venv install)"
+# The step that turns the prefix into the artefact. It is minutes rather than
+# hours, and every part of it is a check on the stages above — the payload is
+# the DT_NEEDED closure of the three extensions, the notices are harvested
+# from the source trees those stages downloaded, and the finished wheel is
+# installed into a fresh venv and imported. So it runs on every build, warm
+# cache or not, rather than being skipped by a stamp.
+#
+# The wheelhouse is not $install_prefix/wheelhouse: that one holds the
+# petsc4py, slepc4py and fenics_dolfinx wheels the earlier stages built, and
+# those are build artefacts that must never be published (spec §6, §10).
+wheelhouse="$build_root/wheelhouse"
+python -m wheelbuild.assemble \
+  --prefix "$install_prefix" \
+  --build-root "$build_root" \
+  --wheelhouse "$wheelhouse" \
+  --base-python "$base_python"
 
 echo "==> done"

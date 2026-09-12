@@ -40,15 +40,22 @@ def check_call(
     )
 
 
-def capture(command: Sequence[str], *, cwd: Path | None = None) -> str:
+def capture(
+    command: Sequence[str],
+    *,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> str:
     """Run a command and return its standard output.
 
-    Used for the inspection tools — ``nm``, ``mpichversion`` — whose output is
-    the thing being checked rather than progress to watch.
+    Used for the inspection tools — ``nm``, ``mpichversion``, ``auditwheel
+    show`` — whose output is the thing being checked rather than progress to
+    watch.
 
     Args:
         command: Argument vector to run.
         cwd: Directory to run it in. Defaults to the current one.
+        env: Complete environment for the command. Defaults to inheriting.
 
     Returns:
         Everything the command wrote to standard output, decoded as text.
@@ -60,5 +67,6 @@ def capture(command: Sequence[str], *, cwd: Path | None = None) -> str:
     return subprocess.check_output(
         list(command),
         cwd=None if cwd is None else str(cwd),
+        env=None if env is None else dict(env),
         text=True,
     )
