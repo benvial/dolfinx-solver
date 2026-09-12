@@ -210,10 +210,21 @@ def test_the_tests_job_sets_no_pythonpath():
 
 
 def test_the_suite_keeps_its_scratch_out_of_the_checkout(workflow):
-    work_dir = workflow["jobs"]["tests"]["env"]["WORK_DIR"]
+    """On the step rather than the job: `runner` is not a context a job-level
+    `env:` may read, and GitHub rejects the workflow file outright for it."""
+    step = _step(workflow, "tests", "Run the wheel test suite")
+    work_dir = step["env"]["WORK_DIR"]
 
     assert "runner.temp" in work_dir
     assert "github.workspace" not in work_dir
+
+
+def test_no_job_level_env_reads_a_context_github_refuses_there(workflow):
+    """The failure this cost a run: a workflow that parses locally and is
+    rejected before any job starts, with no job to read a log from."""
+    for job in workflow["jobs"].values():
+        for value in job.get("env", {}).values():
+            assert "runner." not in str(value)
 
 
 def test_the_demo_sources_are_cached_on_the_release_they_come_from(workflow):

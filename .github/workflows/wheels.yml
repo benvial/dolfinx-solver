@@ -194,11 +194,6 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ['3.12', '3.13', '3.14']
-    env:
-      # Out of the checkout: the suite makes venvs and unpacks a source tree,
-      # and neither belongs in a directory ruff and pytest walk.
-      WORK_DIR: ${{ runner.temp }}/wheeltest
-      WHEELHOUSE: ${{ github.workspace }}/wheelhouse
     steps:
       - uses: actions/checkout@v5
 
@@ -239,8 +234,18 @@ jobs:
       # The C compiler the stages need is the runner's: every form the smoke
       # stage and the demos assemble is compiled at run time by ffcx through
       # cffi.
+      #
+      # WORK_DIR and WHEELHOUSE are named here rather than in a job-level
+      # `env:`, which is where they were: `runner` is not a context a job's
+      # `env` may read, and GitHub rejects the whole workflow file for it
+      # before any job starts — a run with no jobs and "workflow file issue"
+      # as its only message. A step's `env` may read it.
       - name: Run the wheel test suite
         env:
           PYTHON: python
           DRIVER_PYTHON: python
+          # Out of the checkout: the suite makes venvs and unpacks a source
+          # tree, and neither belongs in a directory ruff and pytest walk.
+          WORK_DIR: ${{ runner.temp }}/wheeltest
+          WHEELHOUSE: ${{ github.workspace }}/wheelhouse
         run: scripts/test-wheel.sh
