@@ -69,6 +69,23 @@ warn_unreachable = true
 warn_unused_configs = true
 warn_unused_ignores = true
 
+[[tool.mypy.overrides]]
+# The payload the wheeltest stages import — dolfinx, petsc4py, slepc4py and
+# the libraries they lean on — exists only inside a built wheel, installed
+# into a venv the suite makes and throws away. The machine that type-checks
+# this repository never has it, so these imports are unresolvable here by
+# construction rather than by omission; the stages themselves are what check
+# that they resolve where it matters.
+ignore_missing_imports = true
+module = [
+  "dolfinx",
+  "dolfinx.*",
+  "mpi4py",
+  "mpi4py.*",
+  "slepc4py",
+  "ufl"
+]
+
 [tool.pytest.ini_options]
 # The build drivers are imported from the source tree and installed into no
 # wheel, so a bare `pytest` has to find them the way `python -m pytest` does.
@@ -105,6 +122,12 @@ select = ["ALL"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["D", "INP001", "S101", "PLC0415", "PT011"]
 "wheelbuild/*.py" = ["T201"]  # build steps report progress on stdout
+# T201: the stages report their findings on stdout, as the build steps do.
+# PLC0415: the payload is imported inside the functions that use it, never
+# at module scope — the module path has to be corrected first (see
+# wheeltest.payload), and the stages have to stay importable by the unit
+# tests on a machine where no wheel is installed at all.
+"wheeltest/*.py" = ["T201", "PLC0415"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

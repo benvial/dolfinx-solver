@@ -60,12 +60,34 @@ upstream tag it builds.
 ```console
 pip install -e '.[dev]'
 ruff check . && ruff format --check .
-mypy dolfinx_solver wheelbuild
+mypy dolfinx_solver wheelbuild wheeltest
 pytest
 ```
 
 `wheelbuild/` holds the build drivers and ships in no wheel; `scripts/` drives
 the manylinux container build.
+
+### Testing a built wheel
+
+`wheeltest/` is the suite that proves a finished wheel from outside the build:
+it installs it into a clean venv and puts five stages to it. Point it at a
+wheelhouse — `scripts/build-in-container.sh` leaves one in `.build-cache` —
+and run the whole thing, or one stage at a time:
+
+```console
+scripts/test-wheel.sh                 # every stage, one venv
+scripts/wheel-test.sh                 # install, import order, foreign petsc4py
+scripts/smoke-test.sh                 # complex Helmholtz and a SLEPc eigensolve
+scripts/interop-test.sh               # mpiexec -n 2, one shared communicator
+scripts/demo-test.sh                  # five upstream DOLFINx demos
+```
+
+`PYTHON` picks the interpreter the clean venv is made from (the wheel is abi3
+and has to work on 3.12, 3.13 and 3.14, and that interpreter needs nothing
+installed in it), `WHEELHOUSE` the directory holding the wheel, and
+`DEMO_SOURCE` a DOLFINx source tree to take the demos from instead of
+downloading the pinned release. The suite itself runs under `DRIVER_PYTHON`,
+which is the environment the dev extras are installed in.
 
 ## License
 
