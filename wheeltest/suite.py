@@ -26,8 +26,9 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
+from wheelbuild import petsc
 from wheelbuild._process import check_call
-from wheeltest import environment
+from wheeltest import environment, smoke
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -61,8 +62,8 @@ STAGES = (
         ranks=1,
         proves=(
             "the payload imports from the installed site, in the order the "
-            "linkage needs, with one MPI runtime in the process and complex "
-            "scalars in PETSc"
+            "linkage needs, with one MPI runtime in the process and "
+            f"{petsc.SCALAR_TYPE} scalars in PETSc"
         ),
     ),
     Stage(
@@ -78,10 +79,7 @@ STAGES = (
         name="smoke",
         module="wheeltest.smoke",
         ranks=1,
-        proves=(
-            "a complex Helmholtz problem solves onto its exact plane wave "
-            "and SLEPc finds the Dirichlet Laplacian's first eigenvalues"
-        ),
+        proves=smoke.proves(),
     ),
     Stage(
         name="interop",

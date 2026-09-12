@@ -3,21 +3,54 @@
 import pytest
 
 from wheelbuild import dolfinx as dolfinx_driver
+from wheelbuild import petsc
 from wheeltest import demos
 
 
-def test_the_subset_is_the_size_the_spec_asks_for():
+@pytest.mark.parametrize("variant", ["complex", "real"])
+def test_the_subset_is_the_size_the_spec_asks_for(variant):
     """Spec §11: three to five upstream demos."""
-    assert 3 <= len(demos.DEMOS) <= 5
+    assert 3 <= len(demos.subset(variant)) <= 5
 
 
-def test_the_subset_holds_a_parallel_demo_and_a_complex_one():
-    assert any(demo.ranks > 1 for demo in demos.DEMOS)
-    assert any("complex" in demo.covers for demo in demos.DEMOS)
+@pytest.mark.parametrize("variant", ["complex", "real"])
+def test_every_subset_holds_a_parallel_demo(variant):
+    assert any(demo.ranks > 1 for demo in demos.subset(variant))
 
 
-def test_every_demo_says_what_it_covers():
-    for demo in demos.DEMOS:
+def test_the_complex_subset_holds_the_demos_written_for_complex_scalars():
+    assert demos.HELMHOLTZ in demos.DEMO_SUBSETS["complex"]
+    assert demos.WAVEGUIDE in demos.DEMO_SUBSETS["complex"]
+
+
+def test_the_real_subset_holds_none_of_them():
+    """They interpolate `exp(1j...)`: under a real build numpy drops the
+    imaginary part, the demo exits zero, and the stage proves nothing."""
+    assert demos.HELMHOLTZ not in demos.DEMO_SUBSETS["real"]
+    assert demos.WAVEGUIDE not in demos.DEMO_SUBSETS["real"]
+
+
+def test_every_variant_the_build_knows_has_a_subset():
+    assert set(demos.DEMO_SUBSETS) == set(petsc.SCALAR_TYPES)
+
+
+def test_a_variant_this_build_has_no_name_for_is_refused():
+    with pytest.raises(ValueError, match="Complex"):
+        demos.subset("Complex")
+
+
+def test_the_subset_run_is_the_one_the_build_declares():
+    assert demos.DEMO_SUBSETS[petsc.SCALAR_TYPE] == demos.DEMOS
+
+
+def test_the_subsets_agree_on_what_the_first_demo_is():
+    """`demo_dir` recognises a source tree by it, for either variant."""
+    assert {subset[0] for subset in demos.DEMO_SUBSETS.values()} == {demos.POISSON}
+
+
+@pytest.mark.parametrize("variant", ["complex", "real"])
+def test_every_demo_says_what_it_covers(variant):
+    for demo in demos.subset(variant):
         assert demo.covers
         assert demo.name.startswith("demo_")
         assert demo.ranks >= 1

@@ -10,14 +10,17 @@ where a real build compiled for minutes and then failed a check written for
 the complex one.
 """
 
+import importlib
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
-from wheelbuild import import_check, petsc
+from wheelbuild import assemble, import_check, notices, petsc
 from wheelbuild import prefix as prefix_module
+from wheeltest import demos, smoke, suite
 
 #: A complex PETSc install, as `wheelbuild.petsc.observe` would report it.
 COMPLEX_BUILD = petsc.Build(
@@ -132,3 +135,92 @@ def test_the_refusal_is_what_the_build_script_sees(tmp_path):
     assert first.returncode == 0
     assert second.returncode == 1
     assert "complex" in second.stderr
+
+
+#: The modules that read the variant at import time, so a flip only reaches
+#: them through a re-import. `wheeltest.suite` reads `wheeltest.smoke`, so it
+#: is reloaded after it.
+VARIANT_MODULES = (smoke, demos, suite, notices)
+
+
+@contextmanager
+def built_for(variant: str):
+    """Re-import the variant-reading modules as if the driver declared `variant`.
+
+    The flip is a one-line edit to `wheelbuild.petsc.SCALAR_TYPE` followed by
+    a build, which no test can do. What can be done is what the modules do
+    with the value, which is read once at import; so the value is replaced and
+    the modules are re-imported, then both are put back.
+    """
+    original = petsc.SCALAR_TYPE
+    petsc.SCALAR_TYPE = variant
+    try:
+        for module in VARIANT_MODULES:
+            importlib.reload(module)
+        yield
+    finally:
+        petsc.SCALAR_TYPE = original
+        for module in VARIANT_MODULES:
+            importlib.reload(module)
+
+
+def notice_text() -> str:
+    """Render the notice file's variant-carrying parts, as a wheel ships them."""
+    component = next(item for item in notices.COMPONENTS if item.name == "PETSc")
+    return notices.render(
+        [(component, ((Path(f"petsc-{petsc.PETSC_VERSION}/LICENSE"), "licence"),))],
+        distribution_version="0.0.0",
+    )
+
+
+def test_the_smoke_stage_solves_the_variants_own_problem():
+    """A real stack cannot represent the complex problem's boundary data, so
+    the flip has to move the problem and not only the words about it."""
+    assert smoke.problem_for("complex").solve is smoke.helmholtz
+    assert smoke.problem_for("real").solve is smoke.poisson
+
+
+def test_the_smoke_stage_judges_the_solution_against_the_variants_dtype():
+    """The answer's own dtype, which is `PetscScalar` read off a result."""
+    assert smoke.dtype_problem("complex128", variant="complex") is None
+    assert smoke.dtype_problem("float64", variant="real") is None
+    assert smoke.dtype_problem("float64", variant="complex") is not None
+    assert smoke.dtype_problem("complex128", variant="real") is not None
+
+
+def test_the_demo_subset_follows_the_flip():
+    """Upstream's complex demos interpolate `exp(1j...)` without asking what
+    `PetscScalar` is: under a real build numpy drops the imaginary part and
+    the demo exits zero, so leaving them in would be a stage that passes for
+    the wrong reason."""
+    with built_for(FLIPPED):
+        chosen = demos.DEMOS
+
+    assert chosen == demos.DEMO_SUBSETS[FLIPPED]
+    assert chosen != demos.DEMO_SUBSETS[OTHER[FLIPPED]]
+
+
+def test_the_suites_report_follows_the_flip():
+    """The `proves` lines are what a user reads when the suite passes."""
+    with built_for(FLIPPED):
+        report = " ".join(stage.proves for stage in suite.STAGES)
+
+    assert FLIPPED in report
+    assert OTHER[FLIPPED] not in report
+
+
+def test_the_notice_text_follows_the_flip():
+    """The notice file ships inside the wheel, so a wrong word is published."""
+    with built_for(FLIPPED):
+        text = notice_text()
+
+    assert f"Built for {FLIPPED} scalars" in text
+    assert OTHER[FLIPPED] not in text
+
+
+def test_the_notice_names_the_distribution_the_assembler_builds():
+    """The two spellings of one name (spec §6). This fails the moment the
+    driver flips, because the distribution name is still a literal in
+    `wheelbuild.assemble` and in the packaging metadata — which is ticket 21's
+    half of the flip, and this is the reminder."""
+    assert notices.DISTRIBUTION.replace("-", "_") == assemble.DISTRIBUTION

@@ -13,13 +13,14 @@ The suite is five stages, run by :mod:`wheeltest.suite` against one venv:
 
 * **imports** — :mod:`wheelbuild.import_check`, pointed at the installed
   site rather than the staging site. Same code, and deliberately so: one
-  MPI runtime in the process, complex scalars, DOLFINx reporting the feature
-  set it was compiled with.
+  MPI runtime in the process, the variant's scalars, DOLFINx reporting the
+  feature set it was compiled with.
 * **foreign** — :mod:`wheeltest.foreign`, which builds the environments
   ``dolfinx_solver._bootstrap`` exists to refuse and checks that it refuses
   them, and that it lets a clean one through.
-* **smoke** — :mod:`wheeltest.smoke`, a complex Helmholtz solve against a
-  known answer and a SLEPc eigensolve against a known eigenvalue.
+* **smoke** — :mod:`wheeltest.smoke`, the variant's own boundary-value
+  problem solved against its exact solution, and a SLEPc eigensolve
+  against a known eigenvalue.
 * **interop** — :mod:`wheeltest.interop` under ``mpiexec -n 2``, where
   mpi4py, petsc4py and DOLFINx have to agree on one communicator.
 * **demos** — :mod:`wheeltest.demos`, a subset of upstream's own demo

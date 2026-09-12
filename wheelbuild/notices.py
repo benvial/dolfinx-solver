@@ -212,7 +212,10 @@ COMPONENTS = (
         corresponding_source=(
             f"https://gitlab.com/petsc/petsc/-/tree/v{petsc.PETSC_VERSION}"
         ),
-        note="Built for complex scalars; see the petsc4py entry for the bindings.",
+        note=(
+            f"Built for {petsc.SCALAR_TYPE} scalars; see the petsc4py entry "
+            "for the bindings."
+        ),
     ),
     Component(
         name="petsc4py",
@@ -686,15 +689,24 @@ def unclaimed_libraries(
     )
 
 
+#: The distribution this notice file belongs to, as PyPI spells it. The scalar
+#: variant is part of the name (spec §6), so the flip that makes
+#: ``dolfinx-solver-real`` moves the notice text with it.
+#: :data:`wheelbuild.assemble.DISTRIBUTION` holds the file-name spelling of the
+#: same name — derived there rather than here, because the assembler imports
+#: this module and the reverse would be a cycle; that the two agree is what
+#: ``tests/test_real_variant.py`` holds.
+DISTRIBUTION = f"dolfinx-solver-{petsc.SCALAR_TYPE}"
+
 #: How the notice file introduces itself. The wheel is LGPL-3.0-or-later and
 #: the vendored stack is not, so the reader has to be told which terms apply to
 #: what before the texts start.
-PREAMBLE = """\
+PREAMBLE = f"""\
 This file is a build artefact: it is assembled from the licence texts found in
 the source trees this wheel was built from, and the build fails when a
 component it ships has no text to harvest.
 
-The dolfinx-solver-complex distribution itself is LGPL-3.0-or-later. It
+The {DISTRIBUTION} distribution itself is LGPL-3.0-or-later. It
 vendors the libraries listed below, each under its own terms. Where a licence
 requires the corresponding source to be available, the entry says where to get
 the exact release this wheel was built from.
@@ -730,7 +742,7 @@ def render(
         The complete notice file.
     """
     lines = [
-        f"THIRD-PARTY NOTICES for dolfinx-solver-complex {distribution_version}",
+        f"THIRD-PARTY NOTICES for {DISTRIBUTION} {distribution_version}",
         "",
         PREAMBLE,
     ]

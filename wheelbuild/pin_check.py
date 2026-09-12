@@ -107,7 +107,7 @@ class _HttpsOnlyRedirects(urllib.request.HTTPRedirectHandler):
     than a convenience.
     """
 
-    def redirect_request(  # noqa: PLR0917 - the signature is urllib's
+    def redirect_request(  # the signature is urllib's
         self,
         req: urllib.request.Request,
         fp: object,

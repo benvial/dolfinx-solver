@@ -14,8 +14,12 @@ covers something the others do not:
 
 * three run under ``mpiexec -n 2``, which is where a demo meets the
   partitioner and the distributed assembly,
-* two are complex-scalar problems, one of which is an eigenvalue problem
-  and the only place slepc4py is exercised by upstream code,
+* two are written in the scalars this distribution is built for, which is
+  why the subset follows :data:`wheelbuild.petsc.SCALAR_TYPE`: upstream's
+  complex demos interpolate ``exp(1j...)`` without asking what
+  ``PetscScalar`` is, and under a real build numpy drops the imaginary part
+  with a warning and the demo exits zero having solved something else. A
+  stage that passes for that reason proves less than nothing,
 * one writes both ADIOS2 and XDMF output, which is the vendored I/O stack
   and its parallel HDF5 underneath it.
 
@@ -46,6 +50,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 from wheelbuild import dolfinx as dolfinx_driver
+from wheelbuild import petsc
 from wheeltest import environment
 
 if TYPE_CHECKING:
@@ -66,56 +71,118 @@ class Demo(NamedTuple):
     covers: str
 
 
-#: The subset. Ordered cheapest first, so a wheel that is broken outright
-#: says so in seconds rather than after the eigenvalue problem.
-DEMOS = (
-    Demo(
-        name="demo_poisson.py",
-        ranks=2,
-        covers=(
-            "the canonical first program: a distributed mesh, a "
-            "LinearProblem solved through the PETSc layer whose module body "
-            "loads libpetsc by path (ticket 16), and XDMF output"
-        ),
-    ),
-    Demo(
-        name="demo_helmholtz.py",
-        ranks=1,
-        covers=(
-            "a complex-scalar problem written by upstream, which takes its "
-            "complex branch only when PETSc.ScalarType is complex — this "
-            "distribution's reason to exist (spec §6)"
-        ),
-    ),
-    Demo(
-        name="demo_elasticity.py",
-        ranks=2,
-        covers=(
-            "a vector-valued problem assembled and solved in parallel with "
-            "a near-nullspace attached, which is PETSc's own algebraic "
-            "machinery rather than DOLFINx's"
-        ),
-    ),
-    Demo(
-        name="demo_interpolation-io.py",
-        ranks=2,
-        covers=(
-            "interpolation between spaces and VTX output through the "
-            "vendored ADIOS2, in parallel — the I/O half of the stack, "
-            "which no solve touches"
-        ),
-    ),
-    Demo(
-        name="demo_half-loaded-waveguide.py",
-        ranks=1,
-        covers=(
-            "a SLEPc eigenvalue problem over mixed Nedelec and Lagrange "
-            "elements, complex-scalar: upstream code crossing the nanobind "
-            "boundary into the fenics-basix wheel, which is the failure "
-            "mode a version mismatch produces (ticket 05)"
-        ),
+#: The demos both variants run, as named constants so the two subsets below
+#: can order them among their own.
+POISSON = Demo(
+    name="demo_poisson.py",
+    ranks=2,
+    covers=(
+        "the canonical first program: a distributed mesh, a "
+        "LinearProblem solved through the PETSc layer whose module body "
+        "loads libpetsc by path (ticket 16), and XDMF output"
     ),
 )
+ELASTICITY = Demo(
+    name="demo_elasticity.py",
+    ranks=2,
+    covers=(
+        "a vector-valued problem assembled and solved in parallel with "
+        "a near-nullspace attached, which is PETSc's own algebraic "
+        "machinery rather than DOLFINx's"
+    ),
+)
+INTERPOLATION_IO = Demo(
+    name="demo_interpolation-io.py",
+    ranks=2,
+    covers=(
+        "interpolation between spaces and VTX output through the "
+        "vendored ADIOS2, in parallel — the I/O half of the stack, "
+        "which no solve touches"
+    ),
+)
+
+#: The two the complex variant adds.
+HELMHOLTZ = Demo(
+    name="demo_helmholtz.py",
+    ranks=1,
+    covers=(
+        "a complex-scalar problem written by upstream, which takes its "
+        "complex branch only when PETSc.ScalarType is complex — this "
+        "distribution's reason to exist (spec §6)"
+    ),
+)
+WAVEGUIDE = Demo(
+    name="demo_half-loaded-waveguide.py",
+    ranks=1,
+    covers=(
+        "a SLEPc eigenvalue problem over mixed Nedelec and Lagrange "
+        "elements, complex-scalar: upstream code crossing the nanobind "
+        "boundary into the fenics-basix wheel, which is the failure "
+        "mode a version mismatch produces (ticket 05)"
+    ),
+)
+
+#: The two the real variant adds in their place. Upstream has no real-scalar
+#: eigenvalue demo, so slepc4py is left to :mod:`wheeltest.smoke`, which
+#: solves the same spectrum under either variant; what these two buy instead
+#: is form machinery and a mixed-element direct solve that no other demo in
+#: the subset reaches.
+BIHARMONIC = Demo(
+    name="demo_biharmonic.py",
+    ranks=1,
+    covers=(
+        "a fourth-order problem posed with a C0 interior-penalty method, "
+        "whose interior-facet integrals are a corner of the form compiler "
+        "no other demo in the subset visits"
+    ),
+)
+STOKES = Demo(
+    name="demo_stokes.py",
+    ranks=2,
+    covers=(
+        "a mixed-element saddle-point problem solved in parallel, both "
+        "monolithically through a vendored direct factorisation and "
+        "block-wise through a fieldsplit preconditioner"
+    ),
+)
+
+#: What each variant runs, ordered cheapest first, so a wheel that is broken
+#: outright says so in seconds rather than after the last problem. The keys
+#: are :data:`wheelbuild.petsc.SCALAR_TYPES`: two of upstream's demos are
+#: written for complex scalars and cannot stand in for a real build (see this
+#: module's docstring), so the subset is part of what the variant flip moves.
+DEMO_SUBSETS = {
+    "complex": (POISSON, HELMHOLTZ, ELASTICITY, INTERPOLATION_IO, WAVEGUIDE),
+    "real": (POISSON, BIHARMONIC, ELASTICITY, INTERPOLATION_IO, STOKES),
+}
+
+
+def subset(variant: str = petsc.SCALAR_TYPE) -> tuple[Demo, ...]:
+    """Return the demos one scalar variant is proved by.
+
+    Args:
+        variant: The scalar type this distribution is built for. It comes
+            from the PETSc driver, so the flip that makes
+            ``dolfinx-solver-real`` moves the subset with it.
+
+    Returns:
+        The demos, cheapest first.
+
+    Raises:
+        ValueError: When ``variant`` is not one of the two this build has a
+            name for.
+    """
+    try:
+        return DEMO_SUBSETS[variant]
+    except KeyError:
+        raise ValueError(
+            f"{variant!r} is not a scalar variant this build knows: "
+            f"{', '.join(petsc.SCALAR_TYPES)} (spec §6)."
+        ) from None
+
+
+#: The subset this build's variant runs.
+DEMOS = subset()
 
 #: What the download identifies itself as. GitHub's archive endpoint
 #: answers ``Python-urllib/3.x`` with a 500 rather than a tarball, so the
@@ -412,24 +479,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="where the pinned release is downloaded and extracted",
     )
     parser.add_argument("--work-dir", type=Path, required=True)
+    parser.add_argument(
+        "--scalar-type",
+        default=petsc.SCALAR_TYPE,
+        choices=list(petsc.SCALAR_TYPES),
+        help="the variant the wheel under test was built for, which decides "
+        "which demos are upstream's for it (spec §6)",
+    )
     args = parser.parse_args(argv)
 
+    chosen = subset(args.scalar_type)
     python = Path(sys.executable)
     launcher = environment.launcher(python)
     directory = demo_dir(args.source) if args.source else fetch(args.cache)
 
     if args.work_dir.exists():
         shutil.rmtree(args.work_dir)
-    problem = check(directory, args.work_dir, python, launcher)
+    problem = check(directory, args.work_dir, python, launcher, chosen)
     if problem is not None:
         print(f"ERROR: {problem}", file=sys.stderr)
         return 1
 
-    parallel = sum(1 for demo in DEMOS if demo.ranks > 1)
+    parallel = sum(1 for demo in chosen if demo.ranks > 1)
     print(
-        f"{len(DEMOS)} upstream demos from {directory} ran against the "
-        f"payload in {args.site}, {parallel} of them on "
-        f"{max(demo.ranks for demo in DEMOS)} ranks"
+        f"{len(chosen)} upstream demos from {directory} ran against the "
+        f"{args.scalar_type}-scalar payload in {args.site}, {parallel} of "
+        f"them on {max(demo.ranks for demo in chosen)} ranks"
     )
     return 0
 
