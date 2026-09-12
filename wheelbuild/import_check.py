@@ -11,9 +11,13 @@ process and cannot be read off an ELF header:
   the MPICH stage built and the wheel discards — so this is not a theoretical
   risk here: ``/proc/self/maps`` says which copies the process actually
   mapped, and two of them would mean the import order stopped working.
-* **Complex scalars.** ``PetscScalar`` is baked into ``libpetsc``, into the
-  extension and later into DOLFINx's binaries alike; ``PETSc.ScalarType`` is
-  what the built stack reports it to be.
+* **The variant's scalars.** ``PetscScalar`` is baked into ``libpetsc``, into
+  the extension and later into DOLFINx's binaries alike; ``PETSc.ScalarType``
+  is what the built stack reports it to be. Which answer is right is the
+  distribution's, not this module's: ``dolfinx-solver-complex`` and
+  ``dolfinx-solver-real`` are two wheels because the type is baked in
+  (spec §6), so the check takes the variant from
+  :data:`wheelbuild.petsc.SCALAR_TYPE` rather than assuming one.
 * **The staged packages, not somebody else's.** The build venv has petsc4py
   installed as a distribution, because slepc4py's ``setup.py`` and DOLFINx's
   build need it importable. The wheel's copy is the one in the staging site,
@@ -38,7 +42,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from wheelbuild import bindings, dolfinx, mpich, version
+from wheelbuild import bindings, dolfinx, mpich, petsc, version
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -54,6 +58,13 @@ MAPS_PATH = Path("/proc/self/maps")
 #: bindings expose. Each is a ``consteval`` function compiled into the
 #: extension, so this is the build's own account of the feature set the wheel
 #: promises (spec §7) — including the one feature that must be absent.
+#:
+#: None of it follows the scalar type, ``has_complex_ufcx_kernels`` included:
+#: DOLFINx returns that one false only under
+#: ``DOLFINX_NO_STDC_COMPLEX_KERNELS`` (``cpp/dolfinx/common/defines.h``),
+#: which says whether the C compiler has ``_Complex`` and not which
+#: ``PetscScalar`` the build links. The real variant reports it true as well,
+#: so this table is shared by both distributions (ticket 17).
 EXPECTED_FEATURES = {
     "has_petsc": True,
     "has_petsc4py": True,
@@ -125,32 +136,46 @@ def mpi_problem(maps_text: str) -> str | None:
     return None
 
 
-def scalar_problem(scalar_type: Any) -> str | None:
-    """Report a ``PetscScalar`` that is not complex.
+def scalar_problem(scalar_type: Any, *, variant: str = petsc.SCALAR_TYPE) -> str | None:
+    """Report a ``PetscScalar`` that is not the variant's scalar type.
 
     Args:
         scalar_type: ``PETSc.ScalarType``, the numpy scalar type the built
             PETSc reports.
+        variant: The scalar type this distribution is built for, ``complex``
+            or ``real``. It comes from the PETSc driver, so the flip that
+            makes ``dolfinx-solver-real`` moves this check with it.
 
     Returns:
-        A message, or ``None`` when the type holds an imaginary part.
+        A message, or ``None`` when the built type is the variant's.
+
+    Raises:
+        ValueError: When ``variant`` is not one of the two this build has a
+            name for. Anything else would quietly be read as ``real``.
     """
+    if variant not in petsc.SCALAR_TYPES:
+        raise ValueError(
+            f"{variant!r} is not a scalar variant this build knows: "
+            f"{', '.join(petsc.SCALAR_TYPES)} (spec §6)."
+        )
     try:
         value = scalar_type(1j)
+        complex_build = value.imag == 1
     except TypeError:
-        return (
-            f"PETSc.ScalarType is {getattr(scalar_type, '__name__', scalar_type)}, "
-            "which cannot hold a complex number. This is the complex-scalar "
-            "distribution; a real build belongs to dolfinx-solver-real, which "
-            "is a different wheel because the scalar type is baked into every "
-            "binary in it (spec §6)."
-        )
-    if value.imag != 1:
-        return (
-            f"PETSc.ScalarType({value!r}) dropped the imaginary part, so this "
-            "stack is not the complex-scalar one this distribution ships."
-        )
-    return None
+        complex_build = False
+
+    if complex_build == (variant == "complex"):
+        return None
+
+    built = "complex" if complex_build else "real"
+    name = getattr(scalar_type, "__name__", scalar_type)
+    return (
+        f"PETSc.ScalarType is {name}, a {built}-scalar build, and this is the "
+        f"{variant}-scalar distribution. The two are separate wheels because "
+        "the scalar type is baked into libpetsc, into the bindings and into "
+        "DOLFINx's binaries alike (spec §6), so a stack built the other way "
+        "cannot be shipped under this name."
+    )
 
 
 def origin_problem(import_name: str, module: Any, site: Path) -> str | None:
@@ -268,6 +293,7 @@ def check(
     import_module: Callable[[str], Any] = importlib.import_module,
     maps_text: str | None = None,
     with_dolfinx: bool = False,
+    variant: str = petsc.SCALAR_TYPE,
 ) -> str | None:
     """Import the stack in order and report the first thing that is wrong.
 
@@ -282,6 +308,7 @@ def check(
             the DOLFINx stage asks for everything. Naming which is expected
             beats looking to see what is there, which would pass a DOLFINx
             stage that staged nothing.
+        variant: The scalar type this distribution is built for (spec §6).
 
     Returns:
         A message naming the first problem, or ``None`` when the stack holds
@@ -317,7 +344,9 @@ def check(
         if problem is not None:
             return problem
 
-    problem = scalar_problem(modules[bindings.PETSC4PY.import_name].ScalarType)
+    problem = scalar_problem(
+        modules[bindings.PETSC4PY.import_name].ScalarType, variant=variant
+    )
     if problem is not None:
         return problem
 
@@ -331,6 +360,33 @@ def check(
     return mpi_problem(maps_text)
 
 
+def summary(
+    *, site: Path, mapped: Sequence[str], variant: str, with_dolfinx: bool = False
+) -> str:
+    """Return the line a passing check prints.
+
+    Args:
+        site: The staging site the packages were imported from.
+        mapped: The ``libmpi`` files the process turned out to have mapped.
+        variant: The scalar type this distribution is built for, which is
+            what the check just proved rather than a word about the build.
+        with_dolfinx: Whether DOLFINx was part of the check.
+
+    Returns:
+        One line naming what was imported, from where, and what held.
+    """
+    staged = "petsc4py and slepc4py"
+    if with_dolfinx:
+        staged = (
+            f"petsc4py, slepc4py and dolfinx {version.DOLFINX_VERSION} "
+            f"({', '.join(sorted(EXPECTED_FEATURES))} as built)"
+        )
+    return (
+        f"{staged} imported from {site} after {MPI_MODULE}, {variant} "
+        f"scalars, one MPI runtime ({mapped[0]})"
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Command-line entry point for the in-process import check."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -340,9 +396,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="expect the staged DOLFINx too, not the bindings alone",
     )
+    parser.add_argument(
+        "--scalar-type",
+        default=petsc.SCALAR_TYPE,
+        choices=["complex", "real"],
+        help="the variant this distribution is built for (spec §6)",
+    )
     args = parser.parse_args(argv)
 
-    problem = check(site=args.site, with_dolfinx=args.dolfinx)
+    problem = check(site=args.site, with_dolfinx=args.dolfinx, variant=args.scalar_type)
     if problem is not None:
         print(f"ERROR: {problem}", file=sys.stderr)
         return 1
@@ -350,15 +412,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     mapped = sorted(
         mapped_libraries(MAPS_PATH.read_text(encoding="utf-8"), mpich.MPI_SONAME)
     )
-    staged = "petsc4py and slepc4py"
-    if args.dolfinx:
-        staged = (
-            f"petsc4py, slepc4py and dolfinx {version.DOLFINX_VERSION} "
-            f"({', '.join(sorted(EXPECTED_FEATURES))} as built)"
-        )
     print(
-        f"{staged} imported from {args.site} after {MPI_MODULE}, complex "
-        f"scalars, one MPI runtime ({mapped[0]})"
+        summary(
+            site=args.site,
+            mapped=mapped,
+            variant=args.scalar_type,
+            with_dolfinx=args.dolfinx,
+        )
     )
     return 0
 

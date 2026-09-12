@@ -1,8 +1,12 @@
 """The in-process proof: one MPI, complex scalars, the staged bindings."""
 
+import inspect
+from pathlib import Path
 from types import SimpleNamespace
 
-from wheelbuild import import_check, mpich, version
+import pytest
+
+from wheelbuild import import_check, mpich, petsc, version
 
 # Four mappings of one file, as the loader leaves them, plus an unrelated
 # library and the anonymous mappings that make up most of the file.
@@ -72,6 +76,45 @@ def test_a_real_scalar_petsc_is_reported():
 
 def test_a_complex_scalar_petsc_is_what_this_distribution_ships():
     assert import_check.scalar_problem(complex) is None
+
+
+def test_the_scalar_check_proves_the_variant_the_driver_declares():
+    """The check belongs to a distribution, and there are two (spec §6)."""
+    assert import_check.scalar_problem(float, variant="real") is None
+
+
+def test_a_complex_petsc_under_the_real_variant_is_reported():
+    """The wrong-way failure: `dolfinx-solver-real` must not ship complex."""
+    problem = import_check.scalar_problem(complex, variant="real")
+
+    assert problem is not None
+    assert "real" in problem
+
+
+def test_the_scalar_check_defaults_to_the_variant_this_build_is():
+    signature = inspect.signature(import_check.scalar_problem)
+
+    assert signature.parameters["variant"].default == petsc.SCALAR_TYPE
+
+
+def test_the_feature_table_does_not_follow_the_scalar_type():
+    """`has_complex_ufcx_kernels` is the C compiler's `_Complex`, not PetscScalar.
+
+    DOLFINx returns it false only under `DOLFINX_NO_STDC_COMPLEX_KERNELS`
+    (`cpp/dolfinx/common/defines.h`), which is about the compiler and not
+    about the PETSc this build links, so the real variant reports it true as
+    well (ticket 17).
+    """
+    assert import_check.EXPECTED_FEATURES["has_complex_ufcx_kernels"] is True
+
+
+@pytest.mark.parametrize("variant", ["complex", "real"])
+def test_the_summary_line_names_the_variant_it_proved(variant):
+    line = import_check.summary(
+        site=Path("/site"), mapped=["/venv/lib/libmpi.so.12"], variant=variant
+    )
+
+    assert f"{variant} scalars" in line
 
 
 def test_a_binding_imported_from_outside_the_staged_tree_is_reported(tmp_path):
@@ -235,3 +278,9 @@ def test_the_bindings_stage_does_not_ask_for_a_dolfinx_it_has_not_built(tmp_path
 
     assert problem is None
     assert "dolfinx" not in imported
+
+
+def test_a_variant_the_build_has_no_name_for_is_refused():
+    """`variant="Complex"` would otherwise silently mean "real"."""
+    with pytest.raises(ValueError, match="Complex"):
+        import_check.scalar_problem(complex, variant="Complex")

@@ -86,6 +86,16 @@ def test_no_command_in_the_script_spells_the_scalar_type_itself(script):
     assert commands == []
 
 
+def test_the_prefix_is_claimed_by_the_variant_before_anything_builds(script):
+    """One prefix per variant; stamps are never pruned (ticket 17)."""
+    layout = stage(script, "install prefix layout")
+
+    assert '--scalar-type "$scalar_type"' in layout
+    assert script.index('scalar_type="$(driver ') < script.index(
+        'echo "==> install prefix layout"'
+    )
+
+
 def test_every_stamp_bound_to_petsc_names_the_release(stamps):
     """Anything built against something PETSc's configure produced.
 
@@ -110,21 +120,34 @@ def test_every_stamp_carrying_petsc_scalars_names_the_scalar_type(stamps):
 
 
 def test_every_stamp_bound_to_mpich_names_the_release(stamps):
-    """The stages compiled with the prefix's `mpicc`/`mpicxx`, or linked to it.
+    """Only the stages a bump makes produce something different name MPICH.
 
-    ADIOS2 and KaHIP are compiled with the prefix's `mpicc`/`mpicxx`, against
-    that MPICH's headers and that `libmpi`'s exported symbols — which is what a
-    bump moves, the soname being frozen across the pinned series (ADR-0001). So
-    both have to relink rather than be re-checked.
+    ADIOS2 and KaHIP are compiled with the prefix's `mpicc`/`mpicxx`, and
+    ticket 18 keyed them on the release for the exercise of it: their rebuilds
+    are minutes, so naming the release costs nothing against the chance that a
+    bump moved something they were linked against.
 
-    The four stages missing from this set are compiled the same way, and
-    whether they should name MPICH too is a live question rather than a
-    decision this test records: PETSc's rebuild is hours where these two are
-    minutes. Flipping the assertion is how that work announces itself
-    (ticket 19).
+    The four stages that do not name it are compiled the same way, and ticket
+    19 decided deliberately to leave them: the wheel's whole MPI story is that
+    every vendored library asks the loader for `libmpi.so.12` and gets the
+    PyPI mpich wheel's copy — a different build from the one in the build
+    prefix — so being linked against one 5.x libmpi rather than another is not
+    a property the wheel preserves or needs (spec §5, ADR-0001). PETSc's
+    rebuild is hours, which is why the insurance ADIOS2 and KaHIP take is not
+    worth taking here. The stage comments in the script carry the same reason.
     """
     bound = {stage for stage, path in stamps.items() if "$mpich_version" in path}
     assert bound == {"mpich", "adios2", "kahip"}
+
+
+@pytest.mark.parametrize(
+    "heading",
+    ["PETSc (", "SLEPc (", "petsc4py + slepc4py", "DOLFINx ("],
+)
+def test_a_stage_that_does_not_name_mpich_says_why_not(script, heading):
+    """The asymmetry with ADIOS2 and KaHIP is a decision, not an oversight."""
+    block = stage(script, heading)
+    assert "ADR-0001" in block, f"{heading} does not say why it may skip a relink"
 
 
 def test_the_adios2_stamp_names_the_petsc_and_the_mpich_it_was_built_against(stamps):

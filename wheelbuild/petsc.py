@@ -58,6 +58,12 @@ PETSC_VERSION = "3.25.5"
 #: is the first release; ``dolfinx-solver-real`` is this flipped to ``real``.
 SCALAR_TYPE = "complex"
 
+#: The two scalar variants this build has a name for. Both distributions are
+#: built from these drivers, and a spelling outside this pair is a typo that
+#: would otherwise be read as "not complex" by every check that compares
+#: against one of them (spec §6).
+SCALAR_TYPES = ("complex", "real")
+
 #: Real precision. Single-precision PETSc is a different ABI again and no
 #: variant of this wheel ships it.
 PRECISION = "double"
@@ -615,9 +621,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=Path,
         help="prefix holding the MPI wrappers; defaults to --prefix",
     )
-    parser.add_argument(
-        "--scalar-type", default=SCALAR_TYPE, choices=["complex", "real"]
-    )
+    parser.add_argument("--scalar-type", default=SCALAR_TYPE, choices=SCALAR_TYPES)
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     parser.add_argument(
         "--validate-only",

@@ -8,6 +8,9 @@ files or the second half of the stack cannot link the first.
 
 from pathlib import Path
 
+import pytest
+
+from wheelbuild import petsc
 from wheelbuild import prefix as prefix_module
 
 
@@ -73,3 +76,73 @@ def test_the_prefix_is_created_when_it_does_not_exist_yet(tmp_path):
 
     assert library_dir == Path(prefix / "lib")
     assert library_dir.is_dir()
+
+
+def test_a_fresh_prefix_takes_the_variant_that_claims_it(tmp_path):
+    """A warm cache from before this check has no marker and is adopted."""
+    prefix_module.claim_variant(tmp_path, "complex")
+
+    assert (tmp_path / prefix_module.VARIANT_FILE).read_text().strip() == "complex"
+
+
+def test_claiming_the_same_variant_again_is_what_every_warm_run_does(tmp_path):
+    prefix_module.claim_variant(tmp_path, "complex")
+
+    assert prefix_module.claim_variant(tmp_path, "complex") == tmp_path
+
+
+def test_a_prefix_built_for_the_other_variant_is_refused(tmp_path):
+    """Stamps are never pruned, so a re-used prefix would re-check a stale
+    stack of the other scalar type forever (ticket 17)."""
+    prefix_module.claim_variant(tmp_path, "complex")
+
+    with pytest.raises(ValueError, match="complex"):
+        prefix_module.claim_variant(tmp_path, "real")
+
+
+def test_the_refusal_names_the_way_out(tmp_path):
+    prefix_module.claim_variant(tmp_path, "real")
+
+    with pytest.raises(ValueError, match="BUILD_ROOT"):
+        prefix_module.claim_variant(tmp_path, "complex")
+
+
+def test_the_variant_defaults_to_the_one_the_petsc_driver_declares(tmp_path):
+    prefix_module.main(["--prefix", str(tmp_path)])
+
+    assert (
+        tmp_path / prefix_module.VARIANT_FILE
+    ).read_text().strip() == petsc.SCALAR_TYPE
+
+
+def test_a_warm_prefix_from_before_the_marker_is_read_from_its_stamps(tmp_path):
+    """The migration case: a cached complex prefix carries no marker, and its
+    PETSc stamp is what says which variant built it (ticket 17)."""
+    (tmp_path / ".petsc-3.25.5-complex.installed").touch()
+
+    with pytest.raises(ValueError, match="complex"):
+        prefix_module.claim_variant(tmp_path, "real")
+
+
+def test_a_warm_prefix_of_this_variant_is_adopted_and_marked(tmp_path):
+    (tmp_path / ".petsc-3.25.5-complex.installed").touch()
+
+    prefix_module.claim_variant(tmp_path, "complex")
+
+    assert (tmp_path / prefix_module.VARIANT_FILE).read_text().strip() == "complex"
+
+
+def test_a_variant_this_build_has_no_name_for_is_refused(tmp_path):
+    """A typo would otherwise be written into the marker and then enforced."""
+    with pytest.raises(ValueError, match="Complex"):
+        prefix_module.claim_variant(tmp_path, "Complex")
+
+    assert not (tmp_path / prefix_module.VARIANT_FILE).exists()
+
+
+def test_nothing_is_laid_out_in_a_prefix_the_other_variant_owns(tmp_path):
+    """The refusal comes before `lib64` is merged into `lib`."""
+    prefix_module.claim_variant(tmp_path, "complex")
+
+    assert prefix_module.main(["--prefix", str(tmp_path), "--scalar-type", "real"]) == 1
+    assert not (tmp_path / "lib64").exists()

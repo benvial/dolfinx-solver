@@ -117,9 +117,25 @@ echo "==> pin check"
 # and the MPICH the next stage builds have drifted apart.
 python -m wheelbuild.pin_check
 
+# The scalar type is read once, here, and every stage below takes it from
+# this variable: the stamp names, the PETSc driver's flag, and the claim the
+# prefix is about to make. The real variant (spec §6) is the flip of
+# wheelbuild.petsc.SCALAR_TYPE and nothing else in this script.
+scalar_type="$(driver 'from wheelbuild.petsc import SCALAR_TYPE; print(SCALAR_TYPE)')"
+[[ -n "$scalar_type" ]] || { echo "could not read SCALAR_TYPE" >&2; exit 1; }
+
 echo "==> install prefix layout"
-# lib and lib64 become one directory before anything installs into either.
-python -m wheelbuild.prefix --prefix "$install_prefix"
+# lib and lib64 become one directory before anything installs into either, and
+# the prefix records which variant owns it. A prefix holds one scalar type:
+# PetscScalar is baked into libpetsc, the bindings and DOLFINx alike, and the
+# stamps below are never pruned — so building the other variant in here would
+# find this one's stamps and re-check a stack of the wrong scalar type. The
+# driver refuses that and says to point BUILD_ROOT at a second directory, one
+# per variant. A warm prefix from before the marker existed is adopted by the
+# first run that claims it, which is the complex build this repository has
+# been running all along.
+python -m wheelbuild.prefix --prefix "$install_prefix" \
+  --scalar-type "$scalar_type"
 
 echo "==> MPICH (binding shims only; the PyPI wheel supplies libmpi)"
 mpich_version="$(driver 'from wheelbuild.mpich import MPICH_VERSION; print(MPICH_VERSION)')"
@@ -154,8 +170,6 @@ else
   touch "$mpich_stamp"
 fi
 
-scalar_type="$(driver 'from wheelbuild.petsc import SCALAR_TYPE; print(SCALAR_TYPE)')"
-[[ -n "$scalar_type" ]] || { echo "could not read SCALAR_TYPE" >&2; exit 1; }
 echo "==> PETSc ($scalar_type scalars, plus its whole --download-* dependency stack)"
 # The multi-hour stage: OpenBLAS, ScaLAPACK, METIS, PT-SCOTCH, MUMPS,
 # SuperLU_DIST and parallel HDF5 are all built by PETSc's configure from the
@@ -175,6 +189,16 @@ fetch_source "$petsc_url" "$petsc_source"
 # when wheelbuild.petsc.SCALAR_TYPE does, and the real variant (spec §6) is
 # exactly that flip — which against a warm prefix would have found the complex
 # stamp, re-checked it, and failed for the wrong reason.
+#
+# Deliberately not stamped on the MPICH release, though this stage is compiled
+# with the prefix's wrappers (ticket 19). ADIOS2's and KaHIP's stamps do name
+# it, and the difference is cost, not correctness: their rebuilds are minutes.
+# The correctness argument is that a bump inside the pinned series moves
+# nothing this stage's output depends on — every library here asks the loader
+# for libmpi.so.12 and, in a user's install, is answered by the PyPI mpich
+# wheel's copy rather than by anything built here (spec §5, ADR-0001), so being
+# linked against one 5.x libmpi rather than another is not a property the wheel
+# preserves. Moving the pin out of the series is what the pin check refuses.
 petsc_stamp="$install_prefix/.petsc-$petsc_version-$scalar_type.installed"
 if [[ -f "$petsc_stamp" ]]; then
   echo "    cached in $install_prefix; re-checking what it says about itself"
@@ -201,7 +225,10 @@ fetch_source "$slepc_url" "$slepc_source"
 # Stamped on the PETSc release too: a PETSc bump has to rebuild the SLEPc that
 # was linked against the old one, and the stamp is what makes that automatic.
 # On its scalar type as well, since that is baked into the binary and a flip
-# of it leaves the release untouched.
+# of it leaves the release untouched. Not on the MPICH release, for the reason
+# spelled out at the PETSc stamp above: the loader answers libmpi.so.12 with
+# the PyPI mpich wheel's copy, so an in-series bump relinks nothing here
+# (spec §5, ADR-0001).
 slepc_stamp="$install_prefix/.slepc-$slepc_version-petsc-$petsc_version-$scalar_type.installed"
 if [[ -f "$slepc_stamp" ]]; then
   echo "    cached in $install_prefix; re-checking it still binds that PETSc"
@@ -220,7 +247,11 @@ echo "==> petsc4py + slepc4py (ours, against the vendored PETSc and SLEPc)"
 # under their upstream import names with no dist-info — the layout the wheel
 # assembly step grafts and the layout their relative rpath is written for.
 # Stamped on both releases and on the scalar type, since a bump or a flip of
-# any of them rebuilds both bindings.
+# any of them rebuilds both bindings. Not on the MPICH release: the extensions
+# reach MPI through libpetsc and through mpi4py's own libmpi, and the copy that
+# answers libmpi.so.12 at run time is the PyPI mpich wheel's rather than the
+# one in this prefix (spec §5, ADR-0001), so an in-series bump is not an input
+# to what this stage produces. Same reading as the PETSc stamp above.
 bindings_stamp="$install_prefix/.bindings-petsc-$petsc_version-$scalar_type-slepc-$slepc_version.installed"
 if [[ -f "$bindings_stamp" ]]; then
   echo "    cached in $install_prefix; re-checking the staged tree and importing it"
@@ -313,6 +344,10 @@ fetch_source "$dolfinx_url" "$dolfinx_source"
 # The bindings' build tree is keyed on the pin too: CMake caches the nanobind
 # it was configured against, so a bump has to configure a fresh tree rather
 # than relink against the old one.
+# Not stamped on the MPICH release, for the reason at the PETSc stamp above:
+# libdolfinx names libmpi.so.12 in its DT_NEEDED and a user's install resolves
+# that to the PyPI mpich wheel, not to the libmpi this prefix holds (spec §5,
+# ADR-0001), so an in-series bump leaves what this stage produces unchanged.
 nanobind_version="$(driver 'from wheelbuild.dolfinx import NANOBIND_VERSION; print(NANOBIND_VERSION)')"
 dolfinx_stamp="$install_prefix/.dolfinx-$dolfinx_version-petsc-$petsc_version-$scalar_type-slepc-$slepc_version-adios2-$adios2_version-kahip-$kahip_version-nanobind-$nanobind_version.installed"
 if [[ -f "$dolfinx_stamp" ]]; then
