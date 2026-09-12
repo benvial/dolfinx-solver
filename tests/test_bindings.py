@@ -250,3 +250,12 @@ def test_the_import_check_runs_without_a_library_path_to_lean_on():
     )
 
     assert "LD_LIBRARY_PATH" not in environment
+
+
+def test_the_dolfinx_distribution_metadata_is_not_refused(tmp_path):
+    """DOLFINx will not import without it; it is staged on purpose."""
+    site = _staged(tmp_path)
+    (site / "fenics_dolfinx-0.11.0.post0.dist-info").mkdir()
+
+    assert bindings.distribution_artefacts(site) == []
+    assert bindings.validate(bindings.PETSC4PY, site, GOOD_BUILD) is site

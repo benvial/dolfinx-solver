@@ -9,8 +9,9 @@
 #
 # Stages so far: the Fortran half of MPICH, then PETSc with its whole
 # --download-* dependency stack, then SLEPc against that PETSc, then our own
-# petsc4py and slepc4py against both. ADIOS2, KaHIP, DOLFINx and the wheel
-# assembly follow in later tickets.
+# petsc4py and slepc4py against both, then ADIOS2 and KaHIP, then DOLFINx —
+# its C++ core and its nanobind bindings — against all of it. The wheel
+# assembly, the notices and the audits follow in a later ticket.
 #
 # Environment:
 #   BUILD_ROOT   scratch root for sources, build trees and the install prefix
@@ -60,6 +61,15 @@ echo "==> toolchain"
 # its CMake sub-builds with -DCMAKE_POLICY_VERSION_MINIMUM=3.5, so the image's
 # CMake 4 is happy with recipes written for CMake 2.8.
 dnf install -y ccache gcc-gfortran patchelf flex >/dev/null
+# Boost (headers), pugixml and spdlog are DOLFINx's three required C++
+# dependencies that nothing else in this build produces, and the licensing
+# table already clears all three to ship (spec §7). pugixml and spdlog live in
+# EPEL rather than the base image, which is why the repository is enabled
+# first — the same sequence upstream's own wheel workflow uses.
+dnf install -y dnf-plugins-core >/dev/null
+dnf install -y epel-release >/dev/null
+/usr/bin/crb enable
+dnf install -y boost-devel pugixml-devel spdlog-devel >/dev/null
 export PATH="/usr/lib64/ccache:$PATH"
 
 echo "==> build environment"
@@ -72,7 +82,21 @@ echo "==> build environment"
 # half of the import check: it is what dlopens the PyPI mpich wheel's libmpi
 # before any compiled module of ours (spec §5).
 "$venv/bin/pip" install --quiet \
-  build auditwheel packaging wheel setuptools "cython>=3" "numpy>=2" mpi4py
+  build auditwheel packaging wheel setuptools "cython>=3" "numpy>=2" mpi4py \
+  "scikit-build-core>=0.11"
+# nanobind is pinned, not floored: our DOLFINx bindings and the published
+# fenics-basix extension share a nanobind type registry only when their ABI
+# tags agree, and a mismatch surfaces as a TypeError in the user's first
+# functionspace call. wheelbuild.dolfinx holds the pin and the check.
+"$venv/bin/pip" install --quiet "$("$venv/bin/python" -c 'from wheelbuild.dolfinx import NANOBIND_REQUIREMENT
+print(NANOBIND_REQUIREMENT)')"
+# The upstream trio is not vendored and never re-pinned here: DOLFINx's C++
+# core compiles against Basix's headers and FFCx's ufcx.h, and the releases it
+# gets are the ones this wheel declares a runtime dependency on, read straight
+# out of our own pyproject.toml (spec §10).
+# shellcheck disable=SC2046 # each requirement is one word by construction
+"$venv/bin/pip" install --quiet $("$venv/bin/python" -c 'from wheelbuild.dolfinx import upstream_trio_requirements
+print(" ".join(upstream_trio_requirements()))')
 # The PyPI mpich wheel is installed here for one reason: its libmpi.so.12 is
 # the library a user's install resolves, and the MPICH stage proves the
 # vendored libmpifort against that exact file (ADR-0001). It is installed
@@ -185,6 +209,81 @@ else
     --petsc-source "$petsc_source" \
     --slepc-source "$slepc_source"
   touch "$bindings_stamp"
+fi
+
+echo "==> ADIOS2 (parallel I/O, against the prefix's parallel HDF5)"
+adios2_version="$(driver 'from wheelbuild.adios2 import ADIOS2_VERSION; print(ADIOS2_VERSION)')"
+adios2_url="$(driver 'from wheelbuild.adios2 import source_url; print(source_url())')"
+adios2_dir="$(driver 'from wheelbuild.adios2 import source_dir_name; print(source_dir_name())')"
+[[ -n "$adios2_version" ]] || { echo "could not read ADIOS2_VERSION" >&2; exit 1; }
+adios2_source="$build_root/$adios2_dir"
+fetch_source "$adios2_url" "$adios2_source"
+adios2_stamp="$install_prefix/.adios2-$adios2_version.installed"
+if [[ -f "$adios2_stamp" ]]; then
+  echo "    cached in $install_prefix; re-checking what it says about itself"
+  python -m wheelbuild.adios2 --validate-only --prefix "$install_prefix"
+else
+  python -m wheelbuild.adios2 \
+    --source-dir "$adios2_source" \
+    --build-dir "$build_root/$adios2_dir-build" \
+    --prefix "$install_prefix" \
+    --jobs "$jobs"
+  touch "$adios2_stamp"
+fi
+
+echo "==> KaHIP (the optional second partitioner beside PT-SCOTCH)"
+kahip_version="$(driver 'from wheelbuild.kahip import KAHIP_VERSION; print(KAHIP_VERSION)')"
+kahip_url="$(driver 'from wheelbuild.kahip import source_url; print(source_url())')"
+kahip_dir="$(driver 'from wheelbuild.kahip import source_dir_name; print(source_dir_name())')"
+[[ -n "$kahip_version" ]] || { echo "could not read KAHIP_VERSION" >&2; exit 1; }
+kahip_source="$build_root/$kahip_dir"
+fetch_source "$kahip_url" "$kahip_source"
+kahip_stamp="$install_prefix/.kahip-$kahip_version.installed"
+if [[ -f "$kahip_stamp" ]]; then
+  echo "    cached in $install_prefix; re-checking it is portable and MPI-linked"
+  python -m wheelbuild.kahip --validate-only --prefix "$install_prefix"
+else
+  python -m wheelbuild.kahip \
+    --source-dir "$kahip_source" \
+    --build-dir "$build_root/$kahip_dir-build" \
+    --prefix "$install_prefix" \
+    --jobs "$jobs"
+  touch "$kahip_stamp"
+fi
+
+echo "==> DOLFINx (C++ core, then the cp312-abi3 nanobind bindings)"
+# The product. The C++ core installs into the shared prefix beside everything
+# it links; the bindings are built by scikit-build-core with
+# wheel.py-api=cp312 and staged into $install_prefix/python beside petsc4py
+# and slepc4py, which is the layout the wheel assembly grafts.
+dolfinx_version="$(driver 'from wheelbuild.dolfinx import DOLFINX_VERSION; print(DOLFINX_VERSION)')"
+dolfinx_url="$(driver 'from wheelbuild.dolfinx import source_url; print(source_url())')"
+dolfinx_dir="$(driver 'from wheelbuild.dolfinx import source_dir_name; print(source_dir_name())')"
+[[ -n "$dolfinx_version" ]] || { echo "could not read DOLFINX_VERSION" >&2; exit 1; }
+dolfinx_source="$build_root/$dolfinx_dir"
+fetch_source "$dolfinx_url" "$dolfinx_source"
+# Stamped on every release DOLFINx is linked against, not only its own:
+# PetscScalar is baked into libdolfinx and into the bindings, and KaHIP's two
+# libraries have unversioned sonames, so a bump there would relink silently.
+# The nanobind pin is in the name too, since that is what decides whether the
+# bindings can exchange types with the basix wheel. A bump of any of them has
+# to rebuild, not re-check.
+# The bindings' build tree is keyed on the pin too: CMake caches the nanobind
+# it was configured against, so a bump has to configure a fresh tree rather
+# than relink against the old one.
+nanobind_version="$(driver 'from wheelbuild.dolfinx import NANOBIND_VERSION; print(NANOBIND_VERSION)')"
+dolfinx_stamp="$install_prefix/.dolfinx-$dolfinx_version-petsc-$petsc_version-slepc-$slepc_version-adios2-$adios2_version-kahip-$kahip_version-nanobind-$nanobind_version.installed"
+if [[ -f "$dolfinx_stamp" ]]; then
+  echo "    cached in $install_prefix; re-checking the build and importing it"
+  python -m wheelbuild.dolfinx --validate-only --prefix "$install_prefix"
+else
+  python -m wheelbuild.dolfinx \
+    --source-dir "$dolfinx_source" \
+    --cpp-build-dir "$build_root/$dolfinx_dir-cpp-build" \
+    --python-build-dir "$build_root/$dolfinx_dir-python-build-nanobind-$nanobind_version" \
+    --prefix "$install_prefix" \
+    --jobs "$jobs"
+  touch "$dolfinx_stamp"
 fi
 
 echo "==> done"

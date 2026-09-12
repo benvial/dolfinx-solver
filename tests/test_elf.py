@@ -163,3 +163,28 @@ def test_the_older_rpath_tag_is_read_the_same_way():
 
 def test_a_library_with_no_search_path_reports_none():
     assert elf.parse_runpath(NM_OUTPUT) == ()
+
+
+# One line of gcc -O2 output for generic x86-64, and one for -march=native on
+# a machine with AVX-512.
+BASELINE_DISASSEMBLY = """\
+  401136:\tmovss  0x2ec2(%rip),%xmm0
+  40113e:\tmulss  %xmm1,%xmm0
+"""
+
+TUNED_DISASSEMBLY = (
+    BASELINE_DISASSEMBLY
+    + """\
+  401146:\tvmovups 0x40(%rsp),%ymm3
+  40114e:\tvfmadd231pd %zmm2,%zmm1,%zmm0
+"""
+)
+
+
+def test_a_baseline_build_uses_no_register_a_2004_cpu_lacks():
+    assert elf.wide_vector_registers(BASELINE_DISASSEMBLY) == set()
+
+
+def test_a_cpu_tuned_build_is_visible_in_its_registers():
+    """-march=native on the builder is an illegal instruction on an older CPU."""
+    assert elf.wide_vector_registers(TUNED_DISASSEMBLY) == {"ymm", "zmm"}

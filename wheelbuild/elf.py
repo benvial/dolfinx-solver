@@ -209,3 +209,49 @@ def read_runpath(library: Path) -> tuple[str, ...]:
         subprocess.CalledProcessError: When ``readelf`` cannot read the file.
     """
     return parse_runpath(capture(["readelf", "--dynamic", str(library)]))
+
+
+#: A register operand in ``objdump`` disassembly that only exists on a machine
+#: newer than the x86-64 baseline: ``%ymm0`` needs AVX, ``%zmm0`` AVX-512.
+#: Plain SSE2 code — everything a compiler emits for generic x86-64 — uses
+#: ``%xmm`` and never these.
+_WIDE_VECTOR_REGISTER = re.compile(r"%(?P<kind>[yz]mm)\d+")
+
+
+def wide_vector_registers(disassembly: str) -> set[str]:
+    """Return the post-baseline vector register kinds a disassembly uses.
+
+    A manylinux wheel has to run on every x86-64 machine, not the one that
+    compiled it. The usual way that breaks is a build system whose default is
+    ``-march=native``: the result runs on the builder and dies with an illegal
+    instruction on an older CPU, which is why :mod:`wheelbuild.petsc` pins
+    OpenBLAS to dynamic dispatch. A library compiled for the baseline uses
+    only the SSE2 ``%xmm`` registers, so finding ``%ymm`` or ``%zmm`` in one is
+    the evidence that a native-tuning flag survived.
+
+    Args:
+        disassembly: Output of ``objdump --disassemble`` over a library.
+
+    Returns:
+        The register kinds found, such as ``{"ymm"}``. Empty for a baseline
+        build.
+    """
+    return {match["kind"] for match in _WIDE_VECTOR_REGISTER.finditer(disassembly)}
+
+
+def read_wide_vector_registers(library: Path) -> set[str]:
+    """Read whether a library was compiled for a newer CPU than the baseline.
+
+    Args:
+        library: Path of the shared library to inspect.
+
+    Returns:
+        The post-baseline vector register kinds it uses; see
+        :func:`wide_vector_registers`.
+
+    Raises:
+        subprocess.CalledProcessError: When ``objdump`` cannot read the file.
+    """
+    return wide_vector_registers(
+        capture(["objdump", "--disassemble", "--no-show-raw-insn", str(library)])
+    )

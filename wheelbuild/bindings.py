@@ -46,6 +46,8 @@ import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
+from packaging.utils import canonicalize_name
+
 from wheelbuild import elf, petsc, slepc
 from wheelbuild._process import check_call
 
@@ -66,6 +68,14 @@ LIMITED_API_TAG = "cp312"
 #: root. The bindings sit beside ``dolfinx_solver`` as top-level packages, so
 #: this is the sibling directory their rpath climbs to.
 VENDORED_LIBRARY_DIR = Path("dolfinx_solver/lib")
+
+#: Distributions whose installed metadata must never ride inside the wheel.
+#: These are the PyPI projects that install a PETSc or a SLEPc of their own:
+#: metadata of any of these names in the payload registers such a
+#: distribution, which is precisely what ``dolfinx_solver._bootstrap`` refuses
+#: at import (spec §6). The names are spelled here rather than imported from
+#: the package, because importing anything from ``dolfinx_solver`` loads MPI.
+REFUSED_DISTRIBUTIONS = frozenset({"petsc", "petsc4py", "slepc", "slepc4py"})
 
 #: Name of the staging directory inside the install prefix: a stand-in for the
 #: wheel root, holding what the assembly step (ticket 06) will graft into the
@@ -515,19 +525,27 @@ def missing_artefacts(binding: Binding, site: Path) -> list[Path]:
 
 
 def distribution_artefacts(site: Path) -> list[Path]:
-    """Return the installed-distribution metadata a staging site carries.
+    """Return the refused installed-distribution metadata a staging site carries.
+
+    Only the four names in :data:`REFUSED_DISTRIBUTIONS` are refused, not
+    every ``.dist-info`` in the site. The DOLFINx stage stages one on purpose:
+    ``dolfinx/__init__.py`` reads its own version out of installed
+    distribution metadata and will not import without it. What must not be
+    there is a PETSc or SLEPc distribution — that is the thing
+    ``dolfinx_solver._bootstrap`` refuses at import as a foreign stack.
 
     Args:
         site: The staging site.
 
     Returns:
-        The ``.dist-info`` and ``.egg-info`` directories found, sorted. There
-        must be none: see :func:`unpack`.
+        The refused ``.dist-info`` and ``.egg-info`` directories found,
+        sorted. There must be none: see :func:`unpack`.
     """
     return sorted(
         path.relative_to(site)
         for pattern in ("*.dist-info", "*.egg-info")
         for path in site.glob(pattern)
+        if canonicalize_name(path.name.partition("-")[0]) in REFUSED_DISTRIBUTIONS
     )
 
 
