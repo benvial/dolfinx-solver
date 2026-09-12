@@ -127,7 +127,16 @@ mpich_url="$(driver 'from wheelbuild.mpich import source_url; print(source_url()
 [[ -n "$mpich_version" ]] || { echo "could not read MPICH_VERSION" >&2; exit 1; }
 mpich_source="$build_root/mpich-$mpich_version"
 fetch_source "$mpich_url" "$mpich_source"
-if [[ -f "$install_prefix/lib/libmpifort.so.12" ]]; then
+# A stamp, not one of the installed shims, is what says the stage is done —
+# the same marker the stages below use. An installed library appears partway
+# through make install, so an install interrupted between libmpifort and
+# libmpicxx left a prefix that took the cached path on every later run and
+# then failed --validate-only for the missing half, forever. The stamp is
+# written after the driver has installed *and* validated, and it carries
+# MPICH_VERSION, so a release bump against a warm prefix rebuilds rather than
+# keeping shims built against another libmpi's symbols.
+mpich_stamp="$install_prefix/.mpich-$mpich_version.installed"
+if [[ -f "$mpich_stamp" ]]; then
   echo "    cached in $install_prefix; re-checking it against $runtime_libmpi"
   python -m wheelbuild.mpich \
     --validate-only \
@@ -142,9 +151,12 @@ else
     --prefix "$install_prefix" \
     --runtime-libmpi "$runtime_libmpi" \
     --jobs "$jobs"
+  touch "$mpich_stamp"
 fi
 
-echo "==> PETSc (complex scalars, plus its whole --download-* dependency stack)"
+scalar_type="$(driver 'from wheelbuild.petsc import SCALAR_TYPE; print(SCALAR_TYPE)')"
+[[ -n "$scalar_type" ]] || { echo "could not read SCALAR_TYPE" >&2; exit 1; }
+echo "==> PETSc ($scalar_type scalars, plus its whole --download-* dependency stack)"
 # The multi-hour stage: OpenBLAS, ScaLAPACK, METIS, PT-SCOTCH, MUMPS,
 # SuperLU_DIST and parallel HDF5 are all built by PETSc's configure from the
 # one line in wheelbuild/petsc.py. PETSc builds in its own source tree, so
@@ -159,15 +171,21 @@ fetch_source "$petsc_url" "$petsc_source"
 # install leaves no stamp and is rebuilt rather than re-checked forever. Its
 # name carries the release and the scalar type, so bumping either takes the
 # build path against a warm prefix instead of silently keeping the old one.
-petsc_stamp="$install_prefix/.petsc-$petsc_version-complex.installed"
+# Both come from the driver: a scalar type spelled out here could not change
+# when wheelbuild.petsc.SCALAR_TYPE does, and the real variant (spec §6) is
+# exactly that flip — which against a warm prefix would have found the complex
+# stamp, re-checked it, and failed for the wrong reason.
+petsc_stamp="$install_prefix/.petsc-$petsc_version-$scalar_type.installed"
 if [[ -f "$petsc_stamp" ]]; then
   echo "    cached in $install_prefix; re-checking what it says about itself"
-  python -m wheelbuild.petsc --validate-only --prefix "$install_prefix"
+  python -m wheelbuild.petsc --validate-only --prefix "$install_prefix" \
+    --scalar-type "$scalar_type"
 else
   # The MPI prefix is the shared prefix: the wrappers, and the mpif.h PETSc's
   # Fortran packages compile against, are what the MPICH stage just installed.
   python -m wheelbuild.petsc \
     --source-dir "$petsc_source" \
+    --scalar-type "$scalar_type" \
     --prefix "$install_prefix" \
     --mpi-prefix "$install_prefix" \
     --jobs "$jobs"
@@ -182,7 +200,9 @@ slepc_source="$build_root/slepc-$slepc_version"
 fetch_source "$slepc_url" "$slepc_source"
 # Stamped on the PETSc release too: a PETSc bump has to rebuild the SLEPc that
 # was linked against the old one, and the stamp is what makes that automatic.
-slepc_stamp="$install_prefix/.slepc-$slepc_version-petsc-$petsc_version.installed"
+# On its scalar type as well, since that is baked into the binary and a flip
+# of it leaves the release untouched.
+slepc_stamp="$install_prefix/.slepc-$slepc_version-petsc-$petsc_version-$scalar_type.installed"
 if [[ -f "$slepc_stamp" ]]; then
   echo "    cached in $install_prefix; re-checking it still binds that PETSc"
   python -m wheelbuild.slepc --validate-only --prefix "$install_prefix"
@@ -199,8 +219,9 @@ echo "==> petsc4py + slepc4py (ours, against the vendored PETSc and SLEPc)"
 # downloaded, never the PyPI sdists, and are staged into $install_prefix/python
 # under their upstream import names with no dist-info — the layout the wheel
 # assembly step grafts and the layout their relative rpath is written for.
-# Stamped on both releases, since a bump of either rebuilds both bindings.
-bindings_stamp="$install_prefix/.bindings-petsc-$petsc_version-slepc-$slepc_version.installed"
+# Stamped on both releases and on the scalar type, since a bump or a flip of
+# any of them rebuilds both bindings.
+bindings_stamp="$install_prefix/.bindings-petsc-$petsc_version-$scalar_type-slepc-$slepc_version.installed"
 if [[ -f "$bindings_stamp" ]]; then
   echo "    cached in $install_prefix; re-checking the staged tree and importing it"
   python -m wheelbuild.bindings --validate-only --prefix "$install_prefix"
@@ -263,7 +284,8 @@ dolfinx_dir="$(driver 'from wheelbuild.dolfinx import source_dir_name; print(sou
 [[ -n "$dolfinx_version" ]] || { echo "could not read DOLFINX_VERSION" >&2; exit 1; }
 dolfinx_source="$build_root/$dolfinx_dir"
 fetch_source "$dolfinx_url" "$dolfinx_source"
-# Stamped on every release DOLFINx is linked against, not only its own:
+# Stamped on every release DOLFINx is linked against, not only its own, and on
+# the scalar type of the PETSc among them:
 # PetscScalar is baked into libdolfinx and into the bindings, and KaHIP's two
 # libraries have unversioned sonames, so a bump there would relink silently.
 # The nanobind pin is in the name too, since that is what decides whether the
@@ -273,7 +295,7 @@ fetch_source "$dolfinx_url" "$dolfinx_source"
 # it was configured against, so a bump has to configure a fresh tree rather
 # than relink against the old one.
 nanobind_version="$(driver 'from wheelbuild.dolfinx import NANOBIND_VERSION; print(NANOBIND_VERSION)')"
-dolfinx_stamp="$install_prefix/.dolfinx-$dolfinx_version-petsc-$petsc_version-slepc-$slepc_version-adios2-$adios2_version-kahip-$kahip_version-nanobind-$nanobind_version.installed"
+dolfinx_stamp="$install_prefix/.dolfinx-$dolfinx_version-petsc-$petsc_version-$scalar_type-slepc-$slepc_version-adios2-$adios2_version-kahip-$kahip_version-nanobind-$nanobind_version.installed"
 if [[ -f "$dolfinx_stamp" ]]; then
   echo "    cached in $install_prefix; re-checking the build and importing it"
   python -m wheelbuild.dolfinx --validate-only --prefix "$install_prefix"
