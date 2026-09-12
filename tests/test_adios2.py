@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from wheelbuild import adios2
+from wheelbuild import adios2, mpich
 
 GOOD_BUILD = adios2.Build(
     version=adios2.ADIOS2_VERSION,
@@ -13,7 +13,9 @@ GOOD_BUILD = adios2.Build(
         | {"ADIOS2_HAVE_BP5"}
     ),
     soname=adios2.soname(),
-    needed=frozenset({"libmpi.so.12", "libhdf5.so.310", "libc.so.6"}),
+    needed=frozenset(
+        {mpich.MPI_SONAME, mpich.CXX_SONAME, "libhdf5.so.310", "libc.so.6"}
+    ),
 )
 
 
@@ -142,6 +144,39 @@ def test_a_library_with_an_unexpected_soname_is_reported():
 
     assert problem is not None
     assert adios2.soname() in problem
+
+
+def test_an_adios2_not_linked_against_the_prefixs_mpi_is_reported():
+    """The feature macros say what configure decided; DT_NEEDED says which
+    libmpi the linker actually bound (spec §5)."""
+    problem = adios2.build_problem(
+        GOOD_BUILD._replace(needed=GOOD_BUILD.needed - {mpich.MPI_SONAME})
+    )
+
+    assert problem is not None
+    assert mpich.MPI_SONAME in problem
+
+
+def test_an_adios2_without_the_cxx_binding_shim_is_reported():
+    """``libmpicxx`` is the reason the wheel vendors a second shim (ADR-0003)."""
+    problem = adios2.build_problem(
+        GOOD_BUILD._replace(needed=GOOD_BUILD.needed - {mpich.CXX_SONAME})
+    )
+
+    assert problem is not None
+    assert mpich.CXX_SONAME in problem
+
+
+def test_the_linkage_check_names_its_sonames_from_the_mpich_driver():
+    """One spelling of each soname, in the driver that builds it."""
+    problem = adios2.build_problem(
+        GOOD_BUILD._replace(needed=frozenset({"libc.so.6"})),
+        mpi_soname="libmpi.so.40",
+        cxx_soname="libmpi_cxx.so.40",
+    )
+
+    assert problem is not None
+    assert "libmpi.so.40" in problem
 
 
 def test_validate_returns_the_prefix_when_everything_holds(tmp_path):

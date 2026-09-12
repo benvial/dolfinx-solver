@@ -33,7 +33,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
-from wheelbuild import elf, macros
+from wheelbuild import elf, macros, mpich
 from wheelbuild._process import check_call
 
 if TYPE_CHECKING:
@@ -121,7 +121,8 @@ class Build(NamedTuple):
             every feature the configure run resolved.
         soname: ``DT_SONAME`` of the installed MPI C++ library.
         needed: Its ``DT_NEEDED`` entries, where the binding to the prefix's
-            MPI and parallel HDF5 shows up.
+            MPI shows up — both the C library every rank shares and the C++
+            shim MPICH's ``mpicxx`` wrapper puts on every C++ link.
     """
 
     version: str | None
@@ -330,13 +331,19 @@ def observe(prefix: Path) -> Build:
 
 
 def build_problem(
-    build: Build, *, expected_version: str = ADIOS2_VERSION
+    build: Build,
+    *,
+    expected_version: str = ADIOS2_VERSION,
+    mpi_soname: str = mpich.MPI_SONAME,
+    cxx_soname: str = mpich.CXX_SONAME,
 ) -> str | None:
     """Report an ADIOS2 that is not the one this wheel is built around.
 
     Args:
         build: What the install says about itself.
         expected_version: The release this driver is pinned to.
+        mpi_soname: The MPI library every vendored library has to ask for.
+        cxx_soname: The C++ binding shim an MPI C++ library links against.
 
     Returns:
         A message naming the first thing that is wrong, or ``None``.
@@ -387,15 +394,53 @@ def build_problem(
             "than chosen — and it is a library the wheel would ship without "
             "a harvested licence (spec §7)."
         )
-    return None
+
+    return _linkage_problem(build, mpi_soname=mpi_soname, cxx_soname=cxx_soname)
 
 
-def validate(prefix: Path, build: Build) -> Path:
+def _linkage_problem(build: Build, *, mpi_soname: str, cxx_soname: str) -> str | None:
+    """Report a C++ library not bound to the prefix's MPI.
+
+    The feature macros above say what configure decided; this says what the
+    linker did, which is the half that survives into the wheel: ``libmpi`` is
+    the single MPI every rank shares (spec §5), and ``libmpicxx`` is the C++
+    shim MPICH's ``mpicxx`` wrapper puts on every C++ link and the wheel
+    therefore vendors (ADR-0003). An ADIOS2 built through some other compiler
+    names neither, and the wheel would carry a shim nothing needs or a library
+    bound to an MPI it does not ship.
+    """
+    missing = [
+        required
+        for required in (mpi_soname, cxx_soname)
+        if required not in build.needed
+    ]
+    if not missing:
+        return None
+    found = ", ".join(sorted(build.needed)) or "nothing"
+    return (
+        f"{CXX_LIBRARY} does not ask the loader for {', '.join(missing)} "
+        f"(it needs {found}). The features say what configure decided; the "
+        "DT_NEEDED entries say what the linker did, and the wheel's MPI "
+        f"story rests on the second: {mpi_soname} is the runtime every rank "
+        f"shares (spec §5) and {cxx_soname} is the C++ shim it drags in, "
+        "which is the reason the wheel vendors that shim at all (ADR-0003)."
+    )
+
+
+def validate(
+    prefix: Path,
+    build: Build,
+    *,
+    mpi_soname: str = mpich.MPI_SONAME,
+    cxx_soname: str = mpich.CXX_SONAME,
+) -> Path:
     """Check a built ADIOS2 against everything the wheel needs to be true.
 
     Args:
         prefix: ADIOS2 install prefix.
         build: What the install says about itself, from :func:`observe`.
+        mpi_soname: The MPI library every vendored library has to ask for.
+        cxx_soname: The C++ binding shim an MPI C++ library links against.
 
     Returns:
         The validated prefix.
@@ -412,7 +457,7 @@ def validate(prefix: Path, build: Build) -> Path:
             + ", ".join(str(relative) for relative in missing)
         )
 
-    problem = build_problem(build)
+    problem = build_problem(build, mpi_soname=mpi_soname, cxx_soname=cxx_soname)
     if problem is not None:
         raise ValueError(problem)
     return prefix
