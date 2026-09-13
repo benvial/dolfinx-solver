@@ -15,11 +15,31 @@ one recorded value per archive and three things read it — the container
 build's ``fetch_source``, :mod:`wheeltest.demos`, and the trio half of
 :mod:`wheelbuild.pin_check` — rather than three lists to keep in step.
 
-A mismatch is deliberately not repaired by re-downloading. A second fetch that
-happened to succeed would turn the one signal this module exists to raise into
-a transient, so the archive is left where it is and the message names it: the
-question "are these the bytes we pinned?" is answered by looking at the file,
-not by trying again.
+Bytes that have just been fetched are judged once and never fetched again. A
+second download that happened to succeed would turn the one signal this module
+exists to raise into a transient, so the archive is left where it is and the
+message names it: the question "are these the bytes we pinned?" is answered by
+looking at the file, not by trying again.
+
+A *cached* archive is a different question, and ticket 26 is what separated
+them. The caches are keyed by release, so a tarball re-rolled upstream lands on
+the file the previous one left behind — and refusing it there is a failure no
+later run can clear, because nothing ever replaces the bytes being refused.
+What such a cache holds is this build's own housekeeping rather than evidence
+about upstream, so :func:`fetch` hashes what it finds and downloads over it
+when it is not the pinned archive. The postcondition is the function's: after
+it returns, the file it names is the archive the driver pinned.
+
+The two rules meet on one file, because a refused download is left where it
+is and a stale cache entry looks exactly like it: same path, same wrong
+digest. What tells them apart is a *rejection marker* written beside the
+archive when a download is refused, naming both the digest that was wanted and
+the digest that arrived. While it stands, and while the bytes beside it are
+still the ones it describes, the refusal is repeated without fetching
+anything — so re-running a failed job reports the same mismatch rather than
+quietly passing on the second attempt. It stops standing the moment anything
+it describes changes: a recorded digest that moved (the bump ticket 26 is
+about), or an archive deleted by the person the message asked to look at it.
 """
 
 from __future__ import annotations
@@ -221,12 +241,71 @@ def download(url: str, archive: Path) -> Path:
     return archive
 
 
+#: Written beside an archive whose *downloaded* bytes were refused, holding
+#: the digest that was wanted and the digest that arrived. Its whole purpose
+#: is to survive to the next run: without it, a refused download is
+#: indistinguishable from a stale cache entry, and the retry it would get is
+#: the one thing this module refuses to do.
+REJECTION_SUFFIX = ".rejected"
+
+
+def rejection(archive: Path) -> Path:
+    """Return where an archive's rejection marker lives.
+
+    Args:
+        archive: The archive it would describe.
+
+    Returns:
+        The marker's path, whether or not it exists.
+    """
+    return archive.with_name(archive.name + REJECTION_SUFFIX)
+
+
+def standing_refusal(archive: Path, expected: str, observed: str) -> str | None:
+    """Report a refusal already recorded against exactly this situation.
+
+    Args:
+        archive: The file on disk.
+        expected: The digest the driver records now.
+        observed: What the file on disk hashes to now.
+
+    Returns:
+        A message, or ``None`` when there is no marker, when it describes
+        some other digest, or when it cannot be read.
+    """
+    marker = rejection(archive)
+    try:
+        recorded = marker.read_text(encoding="utf-8").split()
+    except OSError:
+        return None
+    if recorded[:2] != [expected, observed]:
+        # Something it describes has moved: the driver's digest was bumped, or
+        # the archive was replaced or deleted. Either way the refusal was
+        # about a state that no longer exists.
+        return None
+    return (
+        f"{archive} was downloaded and refused on an earlier run, and neither "
+        f"it nor the recorded digest has changed since:\n"
+        f"  expected {expected}\n"
+        f"  observed {observed}\n"
+        "It is not being fetched again. A retry that happened to succeed "
+        "would turn the one signal this check exists to raise into a "
+        "transient, so the same answer is given until something changes: "
+        "correct the digest the driver records, or delete the archive to ask "
+        f"upstream again. The marker is {rejection(archive)}."
+    )
+
+
 def fetch(url: str, archive: Path, expected: str) -> Path:
-    """Return a verified archive, downloading it if it is not already there.
+    """Return the pinned archive, downloading it unless the cache holds it.
 
     The verification is not conditional on the download: an archive already in
     a cache is hashed too, so a tampered one is caught on the run that unpacks
-    it rather than on the run that fetched it.
+    it rather than on the run that fetched it. What it is not is *refused* for
+    being cached — a cache entry that is merely not the pinned archive is
+    replaced, once, and it is the downloaded bytes that are then judged
+    (ticket 26). Bytes that this code downloaded and refused are the exception,
+    and the marker beside them is what makes them one.
 
     Args:
         url: Where to fetch from.
@@ -234,15 +313,46 @@ def fetch(url: str, archive: Path, expected: str) -> Path:
         expected: The digest the driver records.
 
     Returns:
-        The archive.
+        The archive, whose bytes are the pinned ones.
 
     Raises:
-        ValueError: When the URL is not ``https``, or the bytes are not the
-            pinned ones.
+        ValueError: When the URL is not ``https``, the recorded digest is not
+            a SHA-256, the downloaded bytes are not the pinned ones, or a
+            refusal recorded on an earlier run still stands.
     """
-    if not archive.exists():
-        download(url, archive)
-    verify(archive, expected, url=url)
+    # Before anything is fetched: a digest that is a typo cannot be satisfied
+    # by any bytes upstream serves, and saying so costs no download.
+    malformed = expected_problem(expected)
+    if malformed is not None:
+        raise ValueError(malformed)
+    marker = rejection(archive)
+    if archive.exists():
+        observed = digest(archive)
+        if observed == expected:
+            marker.unlink(missing_ok=True)
+            return archive
+        refusal = standing_refusal(archive, expected, observed)
+        if refusal is not None:
+            raise ValueError(refusal)
+        # No standing refusal, so these are not bytes this code fetched and
+        # judged — they are a cache entry from an earlier pin. The archive is
+        # named for the release, so the previous release's bytes sit exactly
+        # here after a digest bump; left refused they are refused forever,
+        # because nothing else would ever overwrite them.
+        print(
+            f"+ replacing {archive}: it is not the pinned archive, and the "
+            "cache is keyed by release rather than by content",
+            flush=True,
+        )
+    download(url, archive)
+    observed = digest(archive)
+    problem = digest_problem(observed, expected, archive=archive, url=url)
+    if problem is not None:
+        # Recorded before raising, so the next run repeats this answer instead
+        # of asking upstream again (ticket 26 restored ticket 10's rule here).
+        marker.write_text(f"{expected}\n{observed}\n", encoding="utf-8")
+        raise ValueError(problem)
+    marker.unlink(missing_ok=True)
     return archive
 
 

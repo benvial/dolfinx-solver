@@ -265,13 +265,20 @@ def fetch(cache: Path, url: str = "", expected: str = "") -> Path:
         # the re-rolled tarball this check exists for -- would keep running
         # the demos out of the bytes it replaced, because the directory name
         # is the release and the release did not change.
-        shutil.rmtree(extracted, ignore_errors=True)
+        #
+        # The replacement is obtained before the tree it replaces is touched
+        # (ticket 26). The tree is the only unpacked copy there is, and a
+        # fetch that cannot produce the pinned bytes is a run that still has
+        # something to say; destroying it first turned one bad digest into a
+        # cache no later run could repair.
+        #
         # Verified on the run that unpacks it, not only on the run that
         # downloads it: the cache is kept between CI runs, so an archive
         # already sitting there is hashed too.
         archive = sources.fetch(
             url, cache / f"{dolfinx_driver.source_dir_name()}.tar.gz", expected
         )
+        shutil.rmtree(extracted, ignore_errors=True)
         with tarfile.open(archive) as tar:
             tar.extractall(cache, filter="data")
         marker.write_text(f"{expected}\n", encoding="utf-8")
