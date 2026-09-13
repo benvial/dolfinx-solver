@@ -146,6 +146,46 @@ def vendored_stack(distribution: str | None) -> str:
     return f"its own {qualifier}PETSc, SLEPc, petsc4py and slepc4py"
 
 
+def sibling_variant_problem(names: Iterable[str]) -> str | None:
+    """Report both scalar variants installed in one environment.
+
+    The two wheels ship the same payload — ``dolfinx``, ``petsc4py`` and
+    ``slepc4py`` under their upstream import names — at the same paths, with a
+    different ``PetscScalar`` compiled into all of it (spec §6). Installing
+    both leaves one wheel's files overwritten by the other's, with both
+    ``RECORD`` files claiming them, so which scalar type this process gets is
+    decided by the order pip happened to unpack them and is recorded nowhere.
+
+    That is the one conflict this payload can have with itself, and it is
+    :func:`shipping_distribution`'s other ``None``: a source checkout cannot
+    name a variant either, but it is an environment that runs. This check is
+    what keeps the two apart (ticket 34).
+
+    Args:
+        names: Normalised names of the installed distributions, as
+            :func:`installed_distribution_names` reports them.
+
+    Returns:
+        A message naming both and how to recover, or ``None`` when at most one
+        variant is installed. The bare ``dolfinx-solver`` meta-package is not
+        one of them — an environment holding it and the variant it pins is the
+        normal install (ticket 23).
+    """
+    installed = sorted(VARIANT_DISTRIBUTIONS.intersection(names))
+    if len(installed) < 2:
+        return None
+    return (
+        f"{' and '.join(installed)} are both installed in this environment. "
+        "They are the same payload compiled against a different PetscScalar "
+        "and they ship it at the same paths, so one wheel's files have "
+        "overwritten the other's and which scalar type this process would "
+        "get is decided by the order pip unpacked them, which nothing "
+        "records. Uninstalling one removes files the other's RECORD also "
+        f"claims, so uninstall {' '.join(installed)}, then install the one "
+        "you want."
+    )
+
+
 def conflicting_distribution_problem(names: Iterable[str]) -> str | None:
     """Report PETSc or SLEPc distributions installed beside this wheel.
 
@@ -258,11 +298,18 @@ def bootstrap(
         The imported ``mpi4py.MPI`` module.
 
     Raises:
-        ImportError: When a foreign PETSc stack is installed or shadows the
-            vendored one, or when mpi4py is missing.
+        ImportError: When both scalar variants are installed, when a foreign
+            PETSc stack is installed or shadows the vendored one, or when
+            mpi4py is missing.
     """
     names = list(installed_distribution_names())
-    problem = conflicting_distribution_problem(names)
+    # First, because it is the only conflict about this payload itself: with
+    # both variants installed every other message has no variant to name, and
+    # the advice they would give — reinstall the distribution — restores one
+    # of the two stacks over the other (ticket 34).
+    problem = sibling_variant_problem(names)
+    if problem is None:
+        problem = conflicting_distribution_problem(names)
     if problem is None:
         problem = foreign_petsc4py_problem(
             petsc4py_origin(), package_dir, shipping_distribution(names)

@@ -192,6 +192,59 @@ def test_a_payload_that_cannot_tell_which_wheel_it_is_says_nothing():
     )
 
 
+def test_both_variants_installed_at_once_is_refused():
+    """They ship the same payload at the same paths, so one wheel's files
+    have overwritten the other's and what imports is whichever pip unpacked
+    second — which nothing records (ticket 34)."""
+    problem = _bootstrap.sibling_variant_problem(
+        ["numpy", "dolfinx-solver-complex", "dolfinx-solver-real"]
+    )
+
+    assert problem is not None
+    assert "dolfinx-solver-complex" in problem
+    assert "dolfinx-solver-real" in problem
+
+
+def test_one_variant_beside_the_meta_package_is_the_normal_install():
+    """`pip install dolfinx-solver` leaves both names installed, and that is
+    the case the meta-package exists for (ticket 23)."""
+    assert (
+        _bootstrap.sibling_variant_problem(["dolfinx-solver", "dolfinx-solver-complex"])
+        is None
+    )
+    assert _bootstrap.sibling_variant_problem(["numpy"]) is None
+
+
+def test_the_way_out_of_two_variants_is_uninstalling_both():
+    """`pip uninstall` of either removes files the other's RECORD claims, so
+    advice that names one leaves a half-populated payload behind."""
+    problem = _bootstrap.sibling_variant_problem(
+        ["dolfinx-solver-complex", "dolfinx-solver-real"]
+    )
+
+    assert problem is not None
+    assert "uninstall dolfinx-solver-complex dolfinx-solver-real" in problem
+
+
+def test_two_variants_fail_before_mpi_is_touched():
+    """The guard that runs first is the one about our own payload: with both
+    installed, every other message would have no variant to name."""
+    mpi = FakeMPI()
+
+    with pytest.raises(ImportError) as caught:
+        _bootstrap.bootstrap(
+            import_module=_importer({"mpi4py.MPI": mpi}),
+            petsc4py_origin=lambda: None,
+            package_dir=PACKAGE_DIR,
+            installed_distribution_names=lambda: [
+                "dolfinx-solver-complex",
+                "dolfinx-solver-real",
+            ],
+        )
+
+    assert "dolfinx-solver-real" in str(caught.value)
+
+
 def test_the_conflict_message_names_the_distribution_to_reinstall():
     problem = _bootstrap.conflicting_distribution_problem(
         ["petsc4py", "dolfinx-solver-real"]

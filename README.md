@@ -44,6 +44,9 @@ mpi4py and petsc4py therefore all share one MPI in one process.
 - A virtual-environment-style prefix; install into an environment of its own.
 - Do not co-install the PyPI `petsc`, `petsc4py`, `slepc` or `slepc4py`
   projects — they would put a second PETSc in the process.
+- Install one scalar variant, never both: the two wheels are the same payload
+  at the same paths, so together they overwrite each other's files. The import
+  refuses that environment rather than running whichever one landed second.
 
 The real-scalar build is published separately as `dolfinx-solver-real`; PETSc's
 scalar type is baked into the binaries, so it cannot be switched at runtime.
