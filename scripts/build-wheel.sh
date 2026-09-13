@@ -50,6 +50,21 @@ mkdir -p "$build_root" "$CCACHE_DIR"
 # the run that extracts, not only on the run that downloads, so a warm cache
 # cannot carry an unverified archive into `tar`.
 #
+# The fetching is wheelbuild.sources.fetch's rather than this script's, which
+# is what ticket 28 changed and why there is no `curl` here. What that module
+# adds is the rule that a *refused download* is never repaired by downloading
+# again: it leaves a rejection marker beside the archive and gives the same
+# answer on every later run until the recorded digest moves or the archive is
+# deleted. An unconditional `curl` had the opposite behaviour — a mismatch
+# that cleared upstream between two runs passed on the second with nothing
+# said about the first — and writing the rule a second time in shell was the
+# alternative to this one. All six archives come in this way.
+#
+# The archive is obtained before $source_dir is deleted, for the reason
+# wheeltest.demos.fetch takes the same order (ticket 26): a fetch that cannot
+# produce the pinned bytes now ends the run without asking upstream again, so
+# a tree deleted first would be gone for every later run too.
+#
 # The marker holds the digest rather than being empty, and is written only
 # after tar returns. That makes it say two things instead of one: an
 # interrupted extraction is redone rather than compiled against half a source
@@ -74,11 +89,10 @@ fetch_source() {
   local url="$1" source_dir="$2" expected="$3" archive="$build_root/${2##*/}.tar.gz"
   local marker="$source_dir/.extracted"
   if [[ ! -f "$marker" || "$(cat "$marker")" != "$expected" ]]; then
-    rm -rf "${source_dir:?}"
-    curl -fsSL "$url" -o "$archive"
     python -m wheelbuild.sources \
-      --archive "$archive" --expected "$expected" --url "$url" ||
+      --url "$url" --archive "$archive" --expected "$expected" ||
       { echo "refusing to unpack $archive" >&2; exit 1; }
+    rm -rf "${source_dir:?}"
     tar -xzf "$archive" -C "$build_root"
     printf '%s\n' "$expected" >"$marker"
   fi

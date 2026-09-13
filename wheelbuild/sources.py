@@ -47,6 +47,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -357,29 +358,45 @@ def fetch(url: str, archive: Path, expected: str) -> Path:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Command-line entry point: verify an archive the shell downloaded.
+    """Command-line entry point: put the pinned archive where the shell asked.
 
-    ``scripts/build-wheel.sh`` fetches with ``curl`` and calls this between
-    the download and ``tar``, so nothing is extracted unverified.
+    ``scripts/build-wheel.sh``'s ``fetch_source`` calls this instead of
+    fetching for itself, so the rules above are written once rather than once
+    per language (ticket 28). It used to ``curl`` unconditionally and call
+    this as a front for :func:`verify`, which meant the shell path had the
+    refusal rule nowhere: a refused archive was fetched again on every run,
+    and a mismatch that cleared upstream between two runs passed on the
+    second with nothing said about the first.
+
+    Returning rather than raising is what the shell reads: a non-zero exit is
+    the whole report, so the message goes to stderr and ``tar`` never runs.
     """
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--url", required=True, help="where the driver names it")
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument(
         "--expected", required=True, help="the SHA-256 the driver records"
     )
-    parser.add_argument("--url", default="", help="where it was fetched from")
     args = parser.parse_args(argv)
 
     try:
-        observed = verify(args.archive, args.expected, url=args.url)
-    except ValueError as mismatch:
-        print(f"ERROR: {mismatch}", file=sys.stderr)
+        archive = fetch(args.url, args.archive, args.expected)
+    except ValueError as refused:
+        print(f"ERROR: {refused}", file=sys.stderr)
+        return 1
+    except urllib.error.URLError as unreachable:
+        # Before the OSError branch it would fall into: urllib's errors are
+        # OSErrors, and reported as an unreadable archive they name a local
+        # file that was never created. A 404 and a digest refusal are
+        # different answers and the build log has to be able to tell them
+        # apart -- which the `curl -fsSL` this replaced did for free.
+        print(f"ERROR: cannot download {args.url}: {unreachable}", file=sys.stderr)
         return 1
     except OSError as unreadable:
         print(f"ERROR: cannot read {args.archive}: {unreadable}", file=sys.stderr)
         return 1
 
-    print(f"{args.archive} is the pinned archive (sha256 {observed})")
+    print(f"{archive} is the pinned archive (sha256 {args.expected})")
     return 0
 
 

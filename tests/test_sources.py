@@ -30,6 +30,9 @@ DRIVERS = [
 PINNED = b"the bytes this build was pinned against"
 PINNED_SHA256 = hashlib.sha256(PINNED).hexdigest()
 
+#: Stands in for the URL a driver names; nothing in these tests fetches.
+CACHED_URL = "https://example.invalid/source.tar.gz"
+
 
 @pytest.fixture
 def archive(tmp_path):
@@ -327,20 +330,105 @@ def test_no_two_archives_are_pinned_to_the_same_digest():
     assert len(set(recorded)) == len(recorded)
 
 
-def test_the_cli_passes_an_archive_that_hashes_to_the_recorded_digest(archive, capsys):
-    assert sources.main(["--archive", str(archive), "--expected", PINNED_SHA256]) == 0
+#: What `scripts/build-wheel.sh` passes the CLI, in the order it passes it.
+def command(archive, expected, url=CACHED_URL):
+    return ["--url", url, "--archive", str(archive), "--expected", expected]
+
+
+def test_the_cli_is_the_fetch_the_container_build_runs(archive, capsys, monkeypatch):
+    """The shell asks this module for the archive rather than for a verdict.
+
+    Until ticket 28 the shell `curl`ed for itself and called the CLI to judge
+    what had arrived, so the refusal rule below lived on one side of the
+    language line only.
+    """
+
+    def never(*_args, **_kwargs):
+        raise AssertionError("the cache already held the pinned archive")
+
+    monkeypatch.setattr(sources, "download", never)
+
+    assert sources.main(command(archive, PINNED_SHA256)) == 0
     assert PINNED_SHA256 in capsys.readouterr().out
 
 
-def test_the_cli_fails_on_an_archive_that_does_not(archive, capsys):
-    assert sources.main(["--archive", str(archive), "--expected", "0" * 64]) == 1
+def test_the_cli_downloads_what_the_cache_does_not_hold(tmp_path, monkeypatch):
+    downloads = []
+    monkeypatch.setattr(sources, "download", counting(downloads, PINNED))
+    archive = tmp_path / "source.tar.gz"
+
+    assert sources.main(command(archive, PINNED_SHA256)) == 0
+    assert downloads == [archive]
+
+
+def test_the_cli_refuses_bytes_that_are_not_the_pinned_ones(
+    tmp_path, capsys, monkeypatch
+):
+    monkeypatch.setattr(sources, "download", counting([], b"not the pinned bytes"))
+
+    code = sources.main(command(tmp_path / "source.tar.gz", PINNED_SHA256))
+
+    assert code == 1
     assert "is not the archive this build pinned" in capsys.readouterr().err
 
 
-def test_the_cli_fails_on_an_archive_that_is_not_there(tmp_path, capsys):
-    missing = tmp_path / "never-downloaded.tar.gz"
+def test_the_cli_repeats_a_refusal_instead_of_fetching_again(
+    tmp_path, capsys, monkeypatch
+):
+    """The container build's six archives get ticket 10's rule (ticket 28).
 
-    assert sources.main(["--archive", str(missing), "--expected", "0" * 64]) == 1
+    Re-running a failed job asked upstream again on the shell path, so a
+    mismatch that cleared upstream between two runs passed on the second with
+    nothing said about the first.
+    """
+    downloads = []
+    monkeypatch.setattr(
+        sources, "download", counting(downloads, b"not the pinned bytes")
+    )
+    argv = command(tmp_path / "source.tar.gz", PINNED_SHA256)
+
+    assert sources.main(argv) == 1
+    assert sources.main(argv) == 1
+    assert len(downloads) == 1
+    assert "downloaded and refused on an earlier run" in capsys.readouterr().err
+
+
+def test_the_cli_fails_on_a_url_that_is_not_https(tmp_path, capsys):
+    archive = tmp_path / "source.tar.gz"
+
+    code = sources.main(command(archive, PINNED_SHA256, url="http://example.invalid/x"))
+
+    assert code == 1
+    assert "is not an https URL" in capsys.readouterr().err
+
+
+def test_the_cli_reports_a_download_that_failed_as_one(tmp_path, capsys, monkeypatch):
+    """A 404 and a digest refusal are different answers, and read that way.
+
+    The `curl -fsSL` this CLI replaced said plainly that the URL had failed.
+    urllib's errors are `OSError`s, so without a branch of their own they were
+    reported as an unreadable local archive that had never been created.
+    """
+    import urllib.error
+
+    def not_found(url, _path):
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(sources, "download", not_found)
+
+    code = sources.main(command(tmp_path / "source.tar.gz", PINNED_SHA256))
+
+    assert code == 1
+    message = capsys.readouterr().err
+    assert CACHED_URL in message
+    assert "cannot read" not in message
+
+
+def test_the_cli_fails_on_an_archive_it_cannot_read(tmp_path, capsys):
+    unreadable = tmp_path / "source.tar.gz"
+    unreadable.mkdir()
+
+    assert sources.main(command(unreadable, PINNED_SHA256)) == 1
     assert "cannot read" in capsys.readouterr().err
 
 

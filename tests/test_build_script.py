@@ -231,8 +231,37 @@ def test_nothing_is_unpacked_before_its_digest_has_been_checked(script):
     definition = script[script.index("fetch_source() {") :]
     definition = definition[: definition.index("\n}\n")]
 
-    assert definition.index("curl -fsSL") < definition.index("wheelbuild.sources")
     assert definition.index("wheelbuild.sources") < definition.index("tar -xzf")
+
+
+def test_the_shell_fetches_through_the_module_that_holds_the_refusal_rule(script):
+    """One implementation of the rule, not one per language (ticket 28).
+
+    The `curl` this replaced was unconditional, so a refused archive was
+    downloaded again on every run and a mismatch that cleared upstream between
+    two runs passed on the second. `wheelbuild.sources.fetch` is where the
+    rejection marker that refuses to do that lives.
+    """
+    definition = script[script.index("fetch_source() {") :]
+    definition = definition[: definition.index("\n}\n")]
+
+    assert "curl" not in definition
+    assert "curl -" not in script, "a download the refusal rule does not cover"
+    assert '--url "$url"' in definition
+
+
+def test_the_archive_is_fetched_before_the_tree_it_replaces_is_deleted(script):
+    """A refusal is never retried now, so a deleted tree would not come back.
+
+    The same order `wheeltest.demos.fetch` took for the demo cache (ticket
+    26): obtain the replacement first, because a fetch that cannot produce the
+    pinned bytes leaves a run that still has a source tree to say it about.
+    """
+    definition = script[script.index("fetch_source() {") :]
+    definition = definition[: definition.index("\n}\n")]
+
+    assert definition.index("wheelbuild.sources") < definition.index("rm -rf")
+    assert definition.index("rm -rf") < definition.index("tar -xzf")
 
 
 def test_a_refused_archive_stops_the_build_without_relying_on_set_e(script):
