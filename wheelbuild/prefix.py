@@ -105,6 +105,7 @@ def claim_variant(prefix: Path, scalar_type: str = SCALAR_TYPE) -> Path:
 
     Raises:
         ValueError: When the prefix was already built for the other variant.
+        OSError: When the marker cannot be written.
     """
     if scalar_type not in SCALAR_TYPES:
         raise ValueError(
@@ -112,8 +113,8 @@ def claim_variant(prefix: Path, scalar_type: str = SCALAR_TYPE) -> Path:
             f"{', '.join(SCALAR_TYPES)} (spec §6)."
         )
     prefix.mkdir(parents=True, exist_ok=True)
-    marker = prefix / VARIANT_FILE
-    claimed = _claimed_variant(prefix)
+    marked = _marker_text(prefix / VARIANT_FILE)
+    claimed = _claimed_variant(prefix, marked)
     if claimed is not None and claimed != scalar_type:
         raise ValueError(
             f"{prefix} was built for the {claimed}-scalar variant and "
@@ -125,28 +126,73 @@ def claim_variant(prefix: Path, scalar_type: str = SCALAR_TYPE) -> Path:
             f"{claimed} stack rather than replace it. Point BUILD_ROOT at "
             "a second directory, one per variant."
         )
-    marker.write_text(f"{scalar_type}\n", encoding="utf-8")
+    if marked != scalar_type:
+        _write_marker(prefix, scalar_type)
     return prefix
 
 
-def _claimed_variant(prefix: Path) -> str | None:
+def _write_marker(prefix: Path, scalar_type: str) -> None:
+    """Record the claim in one step that either happens or does not.
+
+    Writing the marker in place truncates it first, so a run killed in the
+    window between leaves an empty file — the state ticket 24 is about. The
+    warm path does not write at all (the claim is already there), and the one
+    that does writes a complete file beside the marker and renames it over,
+    which is atomic within a directory: an interrupted run leaves either the
+    old marker or the new one, never half of one.
+    """
+    temporary = prefix / f"{VARIANT_FILE}.new"
+    temporary.write_text(f"{scalar_type}\n", encoding="utf-8")
+    temporary.replace(prefix / VARIANT_FILE)
+
+
+def _claimed_variant(prefix: Path, marked: str | None) -> str | None:
     """Return the variant a prefix already belongs to, or ``None`` if it is new.
 
-    The marker is the answer once it exists. Before it did, the PETSc stage's
-    cache stamp was the only thing in the prefix naming a scalar type, and a
-    warm cache restored from CI or left on a workstation has one — so an
-    unmarked prefix is read from its stamps rather than adopted blind, which
-    is what keeps the one migration the marker exists for from overwriting a
-    complex stack with a real one.
+    Args:
+        prefix: The prefix to judge.
+        marked: What its variant marker says, as :func:`_marker_text` reports
+            it. Read by the caller, which also needs to know whether the
+            marker is already the claim being made.
+
+    The marker is the answer once it exists and says something this build has
+    a name for. Before it did, the PETSc stage's cache stamp was the only
+    thing in the prefix naming a scalar type, and a warm cache restored from
+    CI or left on a workstation has one — so an unmarked prefix is read from
+    its stamps rather than adopted blind, which is what keeps the one
+    migration the marker exists for from overwriting a complex stack with a
+    real one.
+
+    A marker whose text is not one of :data:`SCALAR_TYPES` is treated as no
+    marker at all. ``claim_variant`` creates the file before it writes it, so
+    a run killed in between leaves an empty one — as does a truncated or
+    hand-edited file — and obeying that would refuse every build of *either*
+    variant in the name of a variant that does not exist, with nothing to
+    offer but deleting a prefix that holds hours of superbuild. The stamps are
+    the better evidence anyway: they are written by the stage that did the
+    work (ticket 12).
     """
-    marker = prefix / VARIANT_FILE
-    if marker.exists():
-        return marker.read_text(encoding="utf-8").strip()
+    if marked in SCALAR_TYPES:
+        return marked
     for stamp in sorted(prefix.glob(PETSC_STAMP_GLOB)):
         candidate = stamp.name.removesuffix(".installed").rsplit("-", 1)[-1]
         if candidate in SCALAR_TYPES:
             return candidate
     return None
+
+
+def _marker_text(marker: Path) -> str | None:
+    """Return what the variant marker says, or ``None`` when it says nothing.
+
+    Anything the file cannot yield a string for — it is absent, it holds bytes
+    that are not UTF-8, it is a directory — is the same answer as an empty
+    one, because the caller judges the text against the variants it knows and
+    a marker outside that set is ignored either way.
+    """
+    try:
+        return marker.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -164,7 +210,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # one this build must not touch at all, not one it merges lib64 into first.
     try:
         claim_variant(args.prefix, args.scalar_type)
-    except ValueError as error:
+    except (ValueError, OSError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
     library_dir = unify_lib_directories(args.prefix)

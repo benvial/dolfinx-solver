@@ -146,3 +146,74 @@ def test_nothing_is_laid_out_in_a_prefix_the_other_variant_owns(tmp_path):
 
     assert prefix_module.main(["--prefix", str(tmp_path), "--scalar-type", "real"]) == 1
     assert not (tmp_path / "lib64").exists()
+
+
+def test_a_marker_that_names_no_known_variant_is_ignored(tmp_path):
+    """A run killed between creating `.scalar-type` and writing it leaves an
+    empty file, and obeying that would refuse both variants forever while the
+    only remedy on offer discards hours of superbuild (ticket 24)."""
+    (tmp_path / ".petsc-3.25.5-complex.installed").touch()
+    (tmp_path / prefix_module.VARIANT_FILE).write_text("")
+
+    prefix_module.claim_variant(tmp_path, "complex")
+
+    assert (tmp_path / prefix_module.VARIANT_FILE).read_text().strip() == "complex"
+
+
+def test_an_ignored_marker_still_leaves_the_stamps_deciding(tmp_path):
+    """Falling through must reach the stamps, not adopt whoever asks next."""
+    (tmp_path / ".petsc-3.25.5-complex.installed").touch()
+    (tmp_path / prefix_module.VARIANT_FILE).write_text("nonsense\n")
+
+    with pytest.raises(ValueError, match="complex"):
+        prefix_module.claim_variant(tmp_path, "real")
+
+
+def test_an_unreadable_marker_with_nothing_else_to_go_on_is_adopted(tmp_path):
+    """No marker and no stamps is the fresh-prefix path, and a marker that
+    says nothing is the same amount of evidence."""
+    (tmp_path / prefix_module.VARIANT_FILE).write_text("")
+
+    prefix_module.claim_variant(tmp_path, "real")
+
+    assert (tmp_path / prefix_module.VARIANT_FILE).read_text().strip() == "real"
+
+
+def test_a_marker_that_cannot_be_decoded_is_ignored_too(tmp_path):
+    """Truncation can leave bytes that are not UTF-8 at all."""
+    (tmp_path / ".petsc-3.25.5-real.installed").touch()
+    (tmp_path / prefix_module.VARIANT_FILE).write_bytes(b"\xff\xfe")
+
+    with pytest.raises(ValueError, match="real"):
+        prefix_module.claim_variant(tmp_path, "complex")
+
+
+def test_a_warm_run_does_not_rewrite_the_marker_it_agrees_with(tmp_path):
+    """The rewrite is what opens the truncation window ticket 24 is about, so
+    the path every warm run takes must not open one."""
+    prefix_module.claim_variant(tmp_path, "complex")
+    marker = tmp_path / prefix_module.VARIANT_FILE
+    written = marker.stat().st_mtime_ns
+
+    prefix_module.claim_variant(tmp_path, "complex")
+
+    assert marker.stat().st_mtime_ns == written
+
+
+def test_the_marker_is_never_seen_half_written(tmp_path):
+    """It is renamed over, so an interrupted run leaves one whole file or the
+    other and no scratch file behind."""
+    prefix_module.claim_variant(tmp_path, "complex")
+
+    assert (tmp_path / prefix_module.VARIANT_FILE).read_text() == "complex\n"
+    assert list(tmp_path.glob(f"{prefix_module.VARIANT_FILE}.*")) == []
+
+
+def test_a_prefix_that_cannot_be_marked_fails_the_stage_rather_than_the_shell(
+    tmp_path,
+):
+    """`main` is run by `scripts/build-wheel.sh`, which reads an exit code."""
+    (tmp_path / prefix_module.VARIANT_FILE).mkdir()
+
+    assert prefix_module.main(["--prefix", str(tmp_path)]) == 1
+    assert not (tmp_path / "lib64").exists()

@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from bootstrap_shim import bootstrap_module as _bootstrap
 
 from wheelbuild import assemble, import_check, notices, petsc
 from wheelbuild import prefix as prefix_module
@@ -224,3 +225,58 @@ def test_the_notice_names_the_distribution_the_assembler_builds():
     `wheelbuild.assemble` and in the packaging metadata — which is ticket 21's
     half of the flip, and this is the reminder."""
     assert notices.DISTRIBUTION.replace("-", "_") == assemble.DISTRIBUTION
+
+
+def installed_variant_distribution() -> str:
+    """The distribution name a wheel of the declared variant installs under.
+
+    `wheelbuild.notices.DISTRIBUTION` is the assembler's spelling of it and
+    follows `petsc.SCALAR_TYPE` (ticket 22); the payload reads the same name
+    back out of the environment it was installed into, because no build driver
+    ships inside the wheel (ticket 23).
+    """
+    return _bootstrap.canonical_name(notices.DISTRIBUTION)
+
+
+def test_the_payload_reads_the_variant_off_the_distribution_it_shipped_as():
+    """The one name that reaches both sides of the flip."""
+    with built_for(FLIPPED):
+        installed = installed_variant_distribution()
+
+    assert _bootstrap.scalar_variant(installed) == FLIPPED
+
+
+def test_the_conflict_message_follows_the_flip():
+    """What a user with a stray petsc4py reads, and what it tells them to
+    reinstall — naming the other variant there would install a stack of the
+    wrong scalar type over theirs."""
+    with built_for(FLIPPED):
+        installed = installed_variant_distribution()
+
+    problem = _bootstrap.conflicting_distribution_problem(["petsc4py", installed])
+
+    assert problem is not None
+    assert f"{FLIPPED}-scalar" in problem
+    assert f"reinstall {installed}" in problem
+    assert OTHER[FLIPPED] not in problem
+
+
+def test_the_shadowed_petsc4py_message_follows_the_flip():
+    with built_for(FLIPPED):
+        installed = installed_variant_distribution()
+
+    problem = _bootstrap.foreign_petsc4py_problem(
+        Path("/usr/lib/python3/dist-packages/petsc4py/__init__.py"),
+        Path("/venv/lib/python3.12/site-packages/dolfinx_solver"),
+        distribution=installed,
+    )
+
+    assert problem is not None
+    assert f"{FLIPPED}-scalar" in problem
+    assert OTHER[FLIPPED] not in problem
+
+
+def test_the_payload_knows_both_variants_the_drivers_do():
+    """A third variant added to the build has to reach the payload, which
+    cannot import the drivers to find out (ticket 23)."""
+    assert set(_bootstrap.SCALAR_VARIANTS) == set(petsc.SCALAR_TYPES)

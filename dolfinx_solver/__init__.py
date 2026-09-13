@@ -1,4 +1,10 @@
-"""DOLFINx with a complex-scalar PETSc, packaged as a binary wheel.
+"""DOLFINx with a PETSc of one scalar type, packaged as a binary wheel.
+
+Which scalar type is the distribution's, not this module's:
+``dolfinx-solver-complex`` and ``dolfinx-solver-real`` install the same
+package compiled against a different ``PetscScalar`` (spec §6), and
+:func:`._bootstrap.shipping_distribution` is what reads back which of the two
+was installed here.
 
 Importing this package is what makes the wheel's stack safe to use: it orders
 ``mpi4py.MPI`` ahead of every compiled module and refuses an environment where
