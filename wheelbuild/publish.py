@@ -85,6 +85,33 @@ DISTRIBUTIONS = (*VARIANT_DISTRIBUTIONS, META_DISTRIBUTION)
 #: What a built distribution's file name ends in, as against an sdist's.
 WHEEL_SUFFIX = ".whl"
 
+#: The GitHub deployment environment each distribution is uploaded from, and
+#: the reason a release is three jobs rather than one.
+#:
+#: A *pending* publisher — the kind that registers a project PyPI does not
+#: have yet — has to be identifiable from the OIDC token alone, and the token
+#: carries the repository, the workflow and the environment but not the
+#: project name. Three projects published by one repository, one workflow and
+#: one environment are therefore three identical configurations, and PyPI
+#: refuses the second: "a pending trusted publisher matching this
+#: configuration has already been registered for a different project name".
+#: The environment is the field left to tell them apart, so each distribution
+#: gets its own. It is a bootstrap constraint — once the projects exist their
+#: publishers may share a configuration — but the split is kept afterwards:
+#: what it costs is two extra jobs, and what it buys is one approval gate per
+#: project.
+#:
+#: These names are also typed into PyPI's publisher form by hand (README,
+#: *Releasing*), which is why they live in one place and the workflow is
+#: asserted against them rather than the other way round.
+ENVIRONMENTS = {
+    **{
+        f"{META_DISTRIBUTION}-{variant}": f"release-{variant}"
+        for variant in petsc.SCALAR_TYPES
+    },
+    META_DISTRIBUTION: "release-meta",
+}
+
 
 class Index(NamedTuple):
     """One index this project publishes to, from both ends.
@@ -369,6 +396,40 @@ def collect_wheels(wheelhouse: Path, outdir: Path) -> list[Path]:
     return copied
 
 
+def files_for(gathered: Iterable[Gathered], distribution: str) -> list[Path]:
+    """Return the files of one distribution out of a verified release.
+
+    Args:
+        gathered: What was read from the directory the upload reads.
+        distribution: The project whose files to pick out.
+
+    Returns:
+        Its files, in name order.
+    """
+    return sorted(read.path for read in gathered if read.distribution == distribution)
+
+
+def stage_upload(paths: Iterable[Path], upload_dir: Path) -> list[Path]:
+    """Put one distribution's files where the upload step will read them.
+
+    The upload sends a whole directory, so a job that may publish only one
+    project needs a directory holding only that project. Copied rather than
+    moved: every job gathers and verifies the complete release first, and a
+    move would leave the next check looking at a release with a hole in it.
+
+    Args:
+        paths: The files to upload.
+        upload_dir: Directory to put them in, emptied first.
+
+    Returns:
+        The staged files.
+    """
+    if upload_dir.exists():
+        shutil.rmtree(upload_dir)
+    upload_dir.mkdir(parents=True)
+    return [Path(shutil.copy2(path, upload_dir / path.name)) for path in paths]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Command-line entry point for gathering a release."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -382,9 +443,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--outdir",
         type=Path,
         required=True,
-        help="directory the upload reads; everything in it is published",
+        help="directory the whole release is gathered and verified in",
+    )
+    parser.add_argument(
+        "--for",
+        dest="distribution",
+        choices=sorted(DISTRIBUTIONS),
+        help="stage one distribution's files for upload. The release is "
+        "gathered and verified whole either way; this picks which part of "
+        "it the job running is allowed to publish",
+    )
+    parser.add_argument(
+        "--upload-dir",
+        type=Path,
+        help="directory the upload reads, holding only --for's files; "
+        "required with --for, because the upload publishes everything in "
+        "the directory it is given",
     )
     args = parser.parse_args(argv)
+
+    if (args.distribution is None) != (args.upload_dir is None):
+        parser.error("--for and --upload-dir are given together or not at all")
 
     try:
         collect_wheels(args.wheelhouse, args.outdir)
@@ -393,17 +472,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"ERROR: {missing}", file=sys.stderr)
         return 1
 
-    gathered = sorted(path for path in args.outdir.iterdir() if path.is_file())
-    problem = gathered_problem(gathered)
+    paths = sorted(path for path in args.outdir.iterdir() if path.is_file())
+    problem = gathered_problem(paths)
     if problem is not None:
         print(f"ERROR: {problem}", file=sys.stderr)
         return 1
 
-    print(
-        f"==> publishing {__version__} to {args.index} ({INDEXES[args.index].upload})"
-    )
-    for path in gathered:
+    # Which index this goes to is the uploading step's to say, not this
+    # one's: gathering is the same work either way, and naming one here
+    # could name an index the step beside it does not upload to.
+    print(f"==> the release this gathers is {__version__}")
+    for path in paths:
         print(f"  {path.name}")
+
+    if args.distribution is not None:
+        gathered, _ = read_gathered(paths, DISTRIBUTIONS)
+        staged = stage_upload(files_for(gathered, args.distribution), args.upload_dir)
+        print(f"==> {args.distribution} is what this job publishes")
+        for path in staged:
+            print(f"  {path.name}")
     return 0
 
 

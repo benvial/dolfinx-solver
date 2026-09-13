@@ -190,3 +190,114 @@ def test_the_same_version_spelled_two_ways_is_one_release():
     normalised; `__version__` is written by hand. Which spelling a tag uses
     is `wheelbuild.tag_check`'s subject, not this one's."""
     assert publish.gathered_problem(_paths(*RELEASE), version=f"{__version__}0") is None
+
+
+@pytest.fixture
+def wheelhouse(tmp_path, monkeypatch):
+    """A wheelhouse holding both variant wheels, with the meta-package build
+    stubbed: `python -m build` needs an index, and what is under test here is
+    what the gathering does with what it is given."""
+    directory = tmp_path / "wheelhouse"
+    directory.mkdir()
+    for name in (COMPLEX_WHEEL, REAL_WHEEL):
+        (directory / name).write_bytes(b"")
+
+    def fake_build_meta(outdir, **_):
+        for name in (META_WHEEL, META_SDIST):
+            (outdir / name).write_bytes(b"")
+
+    monkeypatch.setattr(publish, "build_meta", fake_build_meta)
+    return directory
+
+
+def test_gathering_a_release_reports_what_it_would_publish(
+    wheelhouse, tmp_path, capsys
+):
+    """The whole entry point, which is the half a unit test of the rules
+    does not reach — a flag removed from the parser but still read at the
+    end is an AttributeError no type checker sees through Namespace."""
+    code = publish.main(
+        ["--wheelhouse", str(wheelhouse), "--outdir", str(tmp_path / "dist")]
+    )
+
+    assert code == 0
+    printed = capsys.readouterr().out
+    assert __version__ in printed
+    for name in RELEASE:
+        assert name in printed
+
+
+def test_one_job_publishes_one_distribution(wheelhouse, tmp_path):
+    """The upload sends a whole directory, so a job allowed to publish one
+    project needs a directory holding only that project."""
+    upload = tmp_path / "upload"
+    code = publish.main(
+        [
+            "--wheelhouse",
+            str(wheelhouse),
+            "--outdir",
+            str(tmp_path / "dist"),
+            "--for",
+            "dolfinx-solver-complex",
+            "--upload-dir",
+            str(upload),
+        ]
+    )
+
+    assert code == 0
+    assert [path.name for path in upload.iterdir()] == [COMPLEX_WHEEL]
+
+
+def test_the_whole_release_is_verified_even_when_one_part_is_published(
+    wheelhouse, tmp_path
+):
+    """Each job independently refuses a release with a hole in it, rather
+    than uploading its own part of a set that cannot be completed."""
+    (wheelhouse / REAL_WHEEL).unlink()
+
+    code = publish.main(
+        [
+            "--wheelhouse",
+            str(wheelhouse),
+            "--outdir",
+            str(tmp_path / "dist"),
+            "--for",
+            "dolfinx-solver-complex",
+            "--upload-dir",
+            str(tmp_path / "upload"),
+        ]
+    )
+
+    assert code == 1
+    assert not (tmp_path / "upload").exists()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [["--for", "dolfinx-solver"], ["--upload-dir", "upload"]],
+)
+def test_naming_one_distribution_without_a_directory_is_refused(
+    wheelhouse, tmp_path, arguments
+):
+    """Half of the pair means either an upload of the whole release from a
+    job entitled to one project, or a staged directory nothing reads."""
+    with pytest.raises(SystemExit):
+        publish.main(
+            [
+                "--wheelhouse",
+                str(wheelhouse),
+                "--outdir",
+                str(tmp_path / "dist"),
+                *arguments,
+            ]
+        )
+
+
+def test_each_distribution_is_published_from_its_own_environment():
+    """A pending publisher is identified by repository, workflow and
+    environment — never by project name — so three projects from one workflow
+    need three environments (PyPI refuses the second otherwise)."""
+    assert sorted(publish.ENVIRONMENTS) == sorted(publish.DISTRIBUTIONS)
+    assert len(set(publish.ENVIRONMENTS.values())) == len(publish.DISTRIBUTIONS)
+    for environment in publish.ENVIRONMENTS.values():
+        assert environment.startswith("release-")

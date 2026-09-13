@@ -14,16 +14,19 @@ import pytest
 import yaml
 
 from wheelbuild.petsc import SCALAR_TYPE_VARIABLE, SCALAR_TYPES
-from wheelbuild.publish import INDEXES
+from wheelbuild.publish import ENVIRONMENTS, INDEXES
 from wheelbuild.version import DOLFINX_VERSION
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "wheels.yml"
 
-#: The job a release is uploaded from, and the one that reads it back out
-#: of the index afterwards. Named here because most of what is asserted
-#: about publishing is asserted about every *other* job.
-PUBLISH_JOB = "publish"
+#: The jobs a release is uploaded from — one per distribution, because a
+#: pending publisher is identified by environment and never by project name
+#: — and the one that reads the release back out of the index afterwards.
+#: Named here because most of what is asserted about publishing is asserted
+#: about every *other* job.
+PUBLISH_JOBS = ("publish-complex", "publish-real", "publish-meta")
+META_PUBLISH_JOB = "publish-meta"
 POST_PUBLISH_JOB = "published"
 
 #: The dispatch input that asks for spec §9's one-time TestPyPI dry run.
@@ -325,16 +328,17 @@ def test_only_the_publish_job_can_reach_an_index(workflow):
     assert workflow["permissions"]["contents"] == "read"
 
     for name, job in workflow["jobs"].items():
-        if name == PUBLISH_JOB:
+        if name in PUBLISH_JOBS:
             continue
         assert "id-token" not in job.get("permissions", {})
         for step in job["steps"]:
             assert "pypi" not in str(step.get("uses", "")).lower()
 
 
-def test_the_publish_job_asks_for_the_token_trusted_publishing_needs(workflow):
+@pytest.mark.parametrize("job", PUBLISH_JOBS)
+def test_the_publish_jobs_ask_for_the_token_trusted_publishing_needs(workflow, job):
     """OIDC, so no long-lived upload token exists to leak (spec §9)."""
-    permissions = workflow["jobs"][PUBLISH_JOB]["permissions"]
+    permissions = workflow["jobs"][job]["permissions"]
 
     assert permissions["id-token"] == "write"
     assert permissions["contents"] == "read"
@@ -342,18 +346,45 @@ def test_the_publish_job_asks_for_the_token_trusted_publishing_needs(workflow):
 
 def test_nothing_is_published_that_was_not_tested(workflow):
     """The wheel job produces an artefact no interpreter has imported; the
-    tests job is what proves the manylinux claim on a plain runner. `needs`
-    waits for all six of its legs, so a release is the tested pair."""
-    assert workflow["jobs"][PUBLISH_JOB]["needs"] == "tests"
+    tests job is what proves the manylinux claim on a plain runner, and it
+    waits for all six of its legs. Every upload descends from it — the two
+    variants directly, the meta-package through them."""
+    for job in set(PUBLISH_JOBS) - {META_PUBLISH_JOB}:
+        assert workflow["jobs"][job]["needs"] == "tests"
 
 
-def test_a_release_is_published_from_a_tag_or_a_deliberate_dry_run_only(workflow):
+def test_the_meta_package_is_published_after_the_variant_it_pins(workflow):
+    """It has no binaries and pins `dolfinx-solver-complex` exactly (spec
+    §1): published first, it is a release in which `pip install
+    dolfinx-solver` resolves to a version the index does not have yet."""
+    needs = workflow["jobs"][META_PUBLISH_JOB]["needs"]
+
+    assert sorted(needs) == sorted(set(PUBLISH_JOBS) - {META_PUBLISH_JOB})
+
+
+@pytest.mark.parametrize("job", PUBLISH_JOBS)
+def test_a_release_is_published_from_a_tag_or_a_deliberate_dry_run_only(workflow, job):
     """Spec §9: `v*` tags publish, and one manual TestPyPI run precedes the
     first release. A push to main reaches a tested wheel and stops."""
-    condition = workflow["jobs"][PUBLISH_JOB]["if"]
+    condition = workflow["jobs"][job]["if"]
 
     assert "startsWith(github.ref, 'refs/tags/v')" in condition
     assert f"inputs.{DRY_RUN_INPUT} == 'testpypi'" in condition
+
+
+def test_each_distribution_is_published_from_the_environment_it_registered(workflow):
+    """A pending publisher is identified by repository, workflow and
+    environment, never by project name, so three projects from one workflow
+    need three environments — and these names are typed into PyPI's form by
+    hand, so the file has to agree with the module that records them."""
+    published = {
+        workflow["jobs"][job]["env"]["DISTRIBUTION"]: workflow["jobs"][job][
+            "environment"
+        ]
+        for job in PUBLISH_JOBS
+    }
+
+    assert published == ENVIRONMENTS
 
 
 def test_the_dry_run_is_an_input_rather_than_a_second_workflow(workflow):
@@ -369,45 +400,53 @@ def test_each_index_is_named_in_the_file_by_the_step_that_uploads_to_it(workflow
     action; two steps each name their own — and between them they name every
     index `wheelbuild.publish` knows about, so an index added there is one
     this file has to grow a step for."""
-    uploads = {
-        step["name"]: step["with"]["repository-url"]
-        for step in _steps(workflow, PUBLISH_JOB)
-        if str(step.get("uses", "")).startswith("pypa/gh-action-pypi-publish")
-    }
+    for job in PUBLISH_JOBS:
+        uploads = [
+            step["with"]["repository-url"]
+            for step in _steps(workflow, job)
+            if str(step.get("uses", "")).startswith("pypa/gh-action-pypi-publish")
+        ]
 
-    assert sorted(uploads.values()) == sorted(
-        index.upload for index in INDEXES.values()
-    )
-    for step in _steps(workflow, PUBLISH_JOB):
-        if str(step.get("uses", "")).startswith("pypa/gh-action-pypi-publish"):
-            assert step["if"].startswith("env.INDEX ==")
+        assert sorted(uploads) == sorted(index.upload for index in INDEXES.values())
+        for step in _steps(workflow, job):
+            if str(step.get("uses", "")).startswith("pypa/gh-action-pypi-publish"):
+                assert step["if"].startswith("env.INDEX ==")
 
 
 def test_both_variants_reach_the_upload_as_one_release(workflow):
     """Each wheel job uploaded its own artefact and a release is the pair
     (ticket 21): one name would collect one variant."""
-    downloaded = next(
-        step["with"]
-        for step in _steps(workflow, PUBLISH_JOB)
-        if str(step.get("uses", "")).startswith("actions/download-artifact")
-    )
+    for job in PUBLISH_JOBS:
+        downloaded = next(
+            step["with"]
+            for step in _steps(workflow, job)
+            if str(step.get("uses", "")).startswith("actions/download-artifact")
+        )
 
-    assert downloaded["pattern"] == "wheelhouse-*"
-    assert downloaded["merge-multiple"] is True
+        assert downloaded["pattern"] == "wheelhouse-*"
+        assert downloaded["merge-multiple"] is True
 
 
 def test_what_is_uploaded_is_read_back_before_it_is_uploaded(workflow):
     """The gather step builds the meta-package and refuses a directory that
     is not exactly this release; the upload sends the whole directory, so the
     two have to name the same one."""
-    gathered = _step(workflow, PUBLISH_JOB, "Gather what this release publishes")
+    for job in PUBLISH_JOBS:
+        gathered = _step(
+            workflow, job, "Gather the release and stage this job's part of it"
+        )
 
-    assert "wheelbuild.publish" in gathered["run"]
-    assert "--outdir dist" in gathered["run"]
+        assert "wheelbuild.publish" in gathered["run"]
+        assert "--outdir dist" in gathered["run"]
+        assert '--for "$DISTRIBUTION"' in gathered["run"]
+        assert "--upload-dir upload" in gathered["run"]
 
-    for step in _steps(workflow, PUBLISH_JOB):
-        if str(step.get("uses", "")).startswith("pypa/gh-action-pypi-publish"):
-            assert step["with"]["packages-dir"] == "dist"
+        for step in _steps(workflow, job):
+            if str(step.get("uses", "")).startswith("pypa/gh-action-pypi-publish"):
+                # The staged directory, never the gathered one: the upload
+                # publishes every file it is given, and the gathered one is
+                # the whole release.
+                assert step["with"]["packages-dir"] == "upload"
 
 
 def test_the_release_is_installed_back_out_of_the_index_it_went_to(workflow):
@@ -415,9 +454,9 @@ def test_the_release_is_installed_back_out_of_the_index_it_went_to(workflow):
     by name on a machine that built nothing (tickets 23, 34)."""
     job = workflow["jobs"][POST_PUBLISH_JOB]
 
-    assert job["needs"] == PUBLISH_JOB
+    assert job["needs"] == META_PUBLISH_JOB
     assert "wheeltest.published" in _run_text(workflow, POST_PUBLISH_JOB)
-    assert job["env"]["INDEX"] == workflow["jobs"][PUBLISH_JOB]["env"]["INDEX"]
+    assert job["env"]["INDEX"] == workflow["jobs"][META_PUBLISH_JOB]["env"]["INDEX"]
 
 
 def test_the_post_publish_check_can_publish_nothing_itself(workflow):
@@ -430,11 +469,12 @@ def test_the_post_publish_check_can_publish_nothing_itself(workflow):
         assert not str(step.get("uses", "")).startswith("actions/download-artifact")
 
 
-def test_an_upload_passes_through_one_reviewable_environment(workflow):
-    """PyPI never reuses a filename, so the upload is the only step in this
-    workflow that cannot be re-run. One name, so there is one place to
-    require a reviewer and one to configure on both trusted publishers."""
-    assert workflow["jobs"][PUBLISH_JOB]["environment"] == "release"
+def test_every_upload_passes_through_a_reviewable_environment(workflow):
+    """PyPI never reuses a filename, so an upload is the only step in this
+    workflow that cannot be re-run. Each goes through a named environment,
+    which is where a required reviewer would go."""
+    for job in PUBLISH_JOBS:
+        assert workflow["jobs"][job]["environment"] in ENVIRONMENTS.values()
 
 
 def test_the_mirrored_release_is_the_one_the_demo_cache_is_keyed_on():

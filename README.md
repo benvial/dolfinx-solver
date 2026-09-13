@@ -137,22 +137,44 @@ refuses a set that is not all three at `dolfinx_solver.__version__`:
 python -m wheelbuild.publish --wheelhouse wheelhouse --outdir dist
 ```
 
-Uploading uses PyPI trusted publishing: an OIDC token minted for the publish
-job, no API token stored anywhere. Three things have to be configured once,
-before the first release:
+Each publish job runs that same gather over the whole release and then stages
+only its own part with `--for`, because the upload publishes every file in the
+directory it is given. A job that verified only its own distribution would
+cheerfully upload half a release that can never be completed.
 
-1. A trusted publisher on each of `dolfinx-solver-complex`,
-   `dolfinx-solver-real` and `dolfinx-solver` — owner `benvial`, repository
-   `dolfinx-solver`, workflow `wheels.yml`, environment `release`. The same
-   three on TestPyPI, for the dry run.
-2. A `release` environment on the GitHub repository. Every upload passes
-   through it, which is where a required reviewer goes: PyPI never reuses a
-   filename, so the upload is the one step of this workflow that cannot be
-   re-run.
-3. The dry run itself — one manual dispatch of the wheels workflow with
-   **publish-to: testpypi**, which gathers and uploads exactly what a tag
-   would, then installs it back out of TestPyPI. Spec §9 asks for it once,
-   not per tag.
+Uploading uses PyPI trusted publishing: an OIDC token minted for each publish
+job, no API token stored anywhere.
+
+**One publish job per distribution, each with its own environment.** That is
+not a style choice. A *pending* publisher — the kind that registers a project
+PyPI does not have yet — is identified by the claims in the OIDC token, which
+carry the repository, the workflow and the environment but never the project
+name. Three projects published from one repository, one workflow and one
+environment are three identical configurations, and PyPI refuses the second
+with *"a pending trusted publisher matching this configuration has already
+been registered for a different project name"*. The environment is the field
+left to tell them apart.
+
+Register these three at <https://pypi.org/manage/account/publishing/>, owner
+`benvial`, repository `dolfinx-solver`, workflow `wheels.yml`:
+
+| PyPI project | Environment |
+| --- | --- |
+| `dolfinx-solver-complex` | `release-complex` |
+| `dolfinx-solver-real` | `release-real` |
+| `dolfinx-solver` | `release-meta` |
+
+`wheelbuild.publish.ENVIRONMENTS` is where those names live, and the workflow
+is asserted against it — so the file and the form cannot drift apart.
+
+The matching GitHub environments already exist on the repository. They carry
+no required reviewer; adding one to any of them is what makes that upload
+pause for a human, which is worth considering given PyPI never reuses a
+filename.
+
+Nothing can be verified before the fact: PyPI has no API for reading
+publishers back, and it does not check that the environments or the workflow
+exist. The first tag is the test.
 
 The tag is checked against the packaged version in seconds, in the checks job,
 long before the build:
