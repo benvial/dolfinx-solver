@@ -357,7 +357,11 @@ jobs:
   # job-level expression is the short form of the `if` above it: given that
   # condition, "not the dry run" is the tag.
   publish:
-    name: publish (${{ inputs.publish-to == 'testpypi' && 'testpypi' || 'pypi' }})
+    # A plain name: `inputs` is not a context a job's `name` may read on a
+    # push, so an expression here renders as its own source text in the
+    # checks list. Which index this went to is on the step that uploaded and
+    # in the log, both of which name it literally.
+    name: publish
     # The tests job, not the wheel job. The wheel job produces an artefact no
     # interpreter has imported; the tests job is what proves the manylinux
     # claim on a plain runner, and `needs` here waits for all six of its legs
@@ -437,7 +441,7 @@ jobs:
           repository-url: https://upload.pypi.org/legacy/
 
   published:
-    name: published (${{ inputs.publish-to == 'testpypi' && 'testpypi' || 'pypi' }})
+    name: published
     needs: publish
     runs-on: ubuntu-latest
     timeout-minutes: 45

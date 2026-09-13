@@ -187,8 +187,27 @@ def series(version: str) -> str:
 
 
 def source_url(version: str = MPICH_VERSION) -> str:
-    """Return the download URL of the pinned MPICH source tarball."""
-    return f"https://www.mpich.org/static/downloads/{version}/mpich-{version}.tar.gz"
+    """Return the download URL of the pinned MPICH source tarball.
+
+    MPICH's own release page — ``www.mpich.org/static/downloads`` — answers
+    GitHub Actions runners with an HTTP 403, reproducibly, while serving the
+    same request from other networks. That host cannot be the one a build
+    depends on. The tag on ``pmodels/mpich`` is where the same release is
+    published, and the archive it serves hashes to :data:`MPICH_SHA256`
+    exactly: the digest is what makes the host an implementation detail
+    rather than a thing to trust (spec §10), so this names the one that
+    answers.
+
+    Args:
+        version: The release to fetch.
+
+    Returns:
+        The URL.
+    """
+    return (
+        "https://github.com/pmodels/mpich/releases/download/"
+        f"v{version}/mpich-{version}.tar.gz"
+    )
 
 
 def configure_arguments(*, source_dir: Path, prefix: Path) -> list[str]:
