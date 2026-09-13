@@ -27,6 +27,10 @@ MANYLINUX_IMAGE = "quay.io/pypa/manylinux_2_34_x86_64"
 #: something that is no longer what the drivers would build.
 CACHE_KEY_INPUTS = (
     "wheelbuild/**/*.py",
+    # The build venv's hashed tooling (ticket 25). Not covered by the glob
+    # above, and a bumped auditwheel or numpy is a different wheel out of the
+    # same sources.
+    "wheelbuild/requirements.txt",
     "scripts/build-wheel.sh",
     "dolfinx_solver/_version.py",
     "pyproject.toml",

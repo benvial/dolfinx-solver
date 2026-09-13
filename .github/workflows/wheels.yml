@@ -157,8 +157,11 @@ jobs:
       #
       # The key is every input that can change what a stage should produce:
       # the drivers themselves, the script that names the cache stamps
-      # (ticket 11), and pyproject.toml, whose trio pins are the releases
-      # DOLFINx's C++ core compiles against. The scalar type is in the key by
+      # (ticket 11), pyproject.toml, whose trio pins are the releases DOLFINx's
+      # C++ core compiles against, and the hashed tooling file the build venv
+      # is installed from (ticket 25) — a bumped auditwheel or numpy is a
+      # different wheel out of the same sources, so it is a different entry.
+      # The scalar type is in the key by
       # name as well as by driver hash, because the drivers now hash the same
       # either way: the variant comes from this job's environment, so nothing
       # in wheelbuild/**/*.py differs between the two and the name is the only
@@ -172,7 +175,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.BUILD_ROOT }}
-          key: superbuild-${{ matrix.scalar-type }}-manylinux_2_34_x86_64-${{ hashFiles('wheelbuild/**/*.py', 'scripts/build-wheel.sh', 'dolfinx_solver/_version.py', 'pyproject.toml') }}
+          key: superbuild-${{ matrix.scalar-type }}-manylinux_2_34_x86_64-${{ hashFiles('wheelbuild/**/*.py', 'wheelbuild/requirements.txt', 'scripts/build-wheel.sh', 'dolfinx_solver/_version.py', 'pyproject.toml') }}
           restore-keys: |
             superbuild-${{ matrix.scalar-type }}-manylinux_2_34_x86_64-
 

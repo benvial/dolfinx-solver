@@ -1,0 +1,40 @@
+# The build venv's tooling, as this repository chooses it (ticket 25).
+#
+# Compiled to wheelbuild/requirements.txt, which is what the build installs;
+# regenerate with the command in that file's header after editing this one.
+#
+# What is deliberately NOT here: the three requirements that come out of the
+# drivers at run time, so that each stays pinned in one place — nanobind
+# (wheelbuild.dolfinx.NANOBIND_REQUIREMENT), the upstream trio (read from this
+# project's own pyproject.toml), and the `mpich` bound (derived from
+# wheelbuild.mpich.MPICH_VERSION). A copy of any of them here would be a
+# second pin to keep in step. Their own transitive dependencies come with them
+# and are not locked here either — fenics-ffcx brings cffi, for one — which is
+# the recorded limit of this file: it pins the tooling this repository chose,
+# not the closure of three requirements it deliberately reads from elsewhere.
+
+# Packaging drivers.
+build
+wheel
+setuptools
+packaging
+
+# What decides what the published wheel claims: auditwheel rewrites sonames
+# and grafts libraries into the payload, and abi3audit --strict is the only
+# thing standing behind the abi3 tag.
+auditwheel
+abi3audit
+
+# Compiled against: petsc4py's and slepc4py's extensions are built against
+# these numpy headers, and the import check runs against this mpi4py.
+numpy>=2
+mpi4py
+
+# What petsc4py's and slepc4py's setup.py need, and what DOLFINx's own
+# bindings are configured by.
+cython>=3
+scikit-build-core>=0.11
+
+# Pinned for the same reason as the rest: it is what resolves everything
+# above, and `pip install --upgrade pip` is a different pip every month.
+pip

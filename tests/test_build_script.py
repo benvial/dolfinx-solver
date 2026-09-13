@@ -24,6 +24,12 @@ BUILD_SCRIPT = REPO_ROOT / "scripts" / "build-wheel.sh"
 #: Stamp assignments, as `<name>_stamp="$install_prefix/.<...>.installed"`.
 STAMP = re.compile(r'^(?P<stage>\w+)_stamp="(?P<path>[^"]+)"$', re.MULTILINE)
 
+#: The one stamp that is not a build stage's, and so is not swept by the rules
+#: below. The build venv compiles nothing and installs into no prefix: its
+#: stamp lives in the venv and carries the lock's digest rather than a release
+#: (ticket 25). The test at the bottom is what keeps this list at one.
+TOOLING_STAMP = "tooling"
+
 
 @pytest.fixture(scope="module")
 def script() -> str:
@@ -31,8 +37,13 @@ def script() -> str:
 
 
 @pytest.fixture(scope="module")
-def stamps(script) -> dict[str, str]:
+def all_stamps(script) -> dict[str, str]:
     return {match["stage"]: match["path"] for match in STAMP.finditer(script)}
+
+
+@pytest.fixture(scope="module")
+def stamps(all_stamps) -> dict[str, str]:
+    return {stage: path for stage, path in all_stamps.items() if stage != TOOLING_STAMP}
 
 
 def stage(script: str, heading: str) -> str:
@@ -326,3 +337,41 @@ def test_the_suite_defaults_to_the_wheelhouse_its_variants_build_left(venv_scrip
     whichever wheel happened to be there."""
     assert ".build-cache-$scalar_type/wheelhouse" in venv_script
     assert ".build-cache-$scalar_type/wheeltest" in venv_script
+
+
+def test_the_only_stamp_outside_the_install_prefix_is_the_build_venvs(all_stamps):
+    """A build stage's stamp lives with what it installed, and is swept above.
+
+    The build venv's does not, because the venv is tooling rather than a stage
+    (CONTEXT.md, *Stage*). Anything else appearing out here is a stage whose
+    stamp the rules above stopped seeing.
+    """
+    outside = {
+        stage: path
+        for stage, path in all_stamps.items()
+        if not path.startswith("$install_prefix/")
+    }
+
+    assert outside == {TOOLING_STAMP: "$venv/.tooling-lock"}
+
+
+def test_a_restored_build_venv_is_rebuilt_when_the_lock_moves(script):
+    """`pip install` never prunes, so layering leaves what the lock dropped."""
+    environment = stage(script, "build environment")
+
+    assert '"$(cat "$tooling_stamp" 2>/dev/null)" != "$tooling_digest"' in environment
+    assert 'rm -rf "${venv:?}"' in environment
+
+
+def test_the_build_venv_stamp_is_written_only_after_every_install(script):
+    """The same rule the stage stamps follow: installed *and* proved first.
+
+    The derived pins are installed after the lock, so a stamp written between
+    them would adopt a venv whose last run died halfway through the three.
+    """
+    written = script.index('>"$tooling_stamp"')
+
+    assert script.index("--require-hashes") < written
+    assert script.index("$mpich_requirement") < written
+    assert script.index('pip" list --format=freeze') < written
+    assert written < script.index('echo "==> pin check"')

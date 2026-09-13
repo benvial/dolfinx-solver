@@ -108,17 +108,35 @@ dnf install -y boost-devel pugixml-devel spdlog-devel >/dev/null
 export PATH="/usr/lib64/ccache:$PATH"
 
 echo "==> build environment"
-[[ -x "$venv/bin/python" ]] || "$base_python" -m venv "$venv"
-"$venv/bin/pip" install --quiet --upgrade pip
+# The venv lives inside the cached build root, so a restored one predates the
+# lock it is about to be checked against — and `pip install` adds without
+# pruning, so a package the lock stopped naming would survive in the venv the
+# wheel is built in, unnamed by anything. The stamp carries the lock's own
+# digest, in the manner of the stage stamps below: a lock that moved builds a
+# fresh venv rather than layering onto the previous resolution. The three
+# derived pins need no stamp of their own — every run reinstalls all three, so
+# the versions in the venv are always the ones their drivers name today.
+tooling_lock="$repo_root/wheelbuild/requirements.txt"
+tooling_stamp="$venv/.tooling-lock"
+tooling_digest="$(sha256sum "$tooling_lock" | cut -d' ' -f1)"
+if [[ ! -x "$venv/bin/python" || "$(cat "$tooling_stamp" 2>/dev/null)" != "$tooling_digest" ]]; then
+  rm -rf "${venv:?}"
+  "$base_python" -m venv "$venv"
+fi
 # build, auditwheel, abi3audit, packaging and wheel drive the packaging;
 # setuptools, Cython and numpy are what petsc4py's and slepc4py's setup.py
 # need, and they are installed here rather than fetched per build so
 # --no-build-isolation can keep the bindings' build on versions this build
 # controls. mpi4py is the runtime half of the import check: it is what dlopens
 # the PyPI mpich wheel's libmpi before any compiled module of ours (spec §5).
-"$venv/bin/pip" install --quiet \
-  build auditwheel abi3audit packaging wheel setuptools "cython>=3" \
-  "numpy>=2" mpi4py "scikit-build-core>=0.11"
+#
+# All of it comes out of one compiled, hashed file, installed with
+# --require-hashes (ticket 25): floors resolve to a different set of wheels
+# every month, and auditwheel and abi3audit decide what the published wheel
+# claims while numpy and mpi4py are compiled and imported against. pip itself
+# is in the file, which is why there is no `--upgrade pip` line above it — the
+# thing that resolves everything else is pinned like everything else.
+"$venv/bin/pip" install --quiet --require-hashes -r "$tooling_lock"
 # nanobind is pinned, not floored: our DOLFINx bindings and the published
 # fenics-basix extension share a nanobind type registry only when their ABI
 # tags agree, and a mismatch surfaces as a TypeError in the user's first
@@ -141,6 +159,17 @@ mpich_requirement="mpich$("$venv/bin/python" -c 'from wheelbuild.mpich import MP
 from wheelbuild.pin_check import expected_specifier
 print(expected_specifier(MPICH_VERSION))')"
 "$venv/bin/pip" install --quiet "$mpich_requirement"
+# Which tooling built this wheel, in the log beside it. The hashed file makes
+# the answer the same for both variants of a release; this is what lets a
+# reader confirm that from the two logs rather than assume it, and it is also
+# where the three derived pins — nanobind, the upstream trio, the mpich bound
+# — appear as the versions their drivers actually resolved to.
+echo "==> build tooling"
+"$venv/bin/pip" list --format=freeze
+# Written only now: the venv is what the whole build environment section
+# produces, and a stamp written before the derived installs would adopt a venv
+# whose last run died halfway through them.
+printf '%s\n' "$tooling_digest" >"$tooling_stamp"
 export PATH="$venv/bin:$PATH"
 runtime_libmpi="$venv/lib/libmpi.so.12"
 # Later stages link against the vendored tree as it is being built.
