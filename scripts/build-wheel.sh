@@ -56,6 +56,20 @@ mkdir -p "$build_root" "$CCACHE_DIR"
 # tree, and a digest that moves without the version moving — an upstream
 # tarball re-rolled under the same name — re-extracts instead of silently
 # reusing the tree the old bytes left behind.
+#
+# What an *empty* marker costs, decided and accepted rather than mitigated
+# (ticket 27): before the digests existed the marker was a bare `touch`, so a
+# cache written by a run older than that re-extracts all six trees once. Five
+# are cheap. The sixth, $build_root/petsc-*, is also PETSc's build tree and
+# holds the --download-* externalpackages, so a cache from a run that was
+# interrupted part-way through PETSc loses that work and starts the stage
+# cold. It is bounded — one run, and only for a build interrupted mid-stage,
+# since the stamps that decide a skip live in the install prefix rather than
+# in the source tree — and both routes to such a cache have since closed:
+# CI's superbuild key hashes wheelbuild/**/*.py, where the digests live, and
+# a local run reads .build-cache-<variant>, which no pre-digest run wrote.
+# Verifying an empty marker against the archive instead of discarding the
+# tree is more shell than a one-time, self-clearing cost is worth.
 fetch_source() {
   local url="$1" source_dir="$2" expected="$3" archive="$build_root/${2##*/}.tar.gz"
   local marker="$source_dir/.extracted"

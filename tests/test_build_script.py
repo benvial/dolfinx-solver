@@ -246,6 +246,21 @@ def test_the_extraction_marker_records_the_digest_it_was_extracted_from(script):
     assert 'printf \'%s\\n\' "$expected" >"$marker"' in definition
 
 
+def test_what_an_empty_marker_costs_is_written_where_the_marker_is(script):
+    """Accepted rather than mitigated (ticket 27), so it is said out loud.
+
+    Markers written before the digests existed are bare `touch` files, and the
+    run that meets one re-extracts every source tree — including PETSc's,
+    which is also its build tree. The decision not to hash around that only
+    holds if the next reader finds the reasoning instead of the symptom.
+    """
+    preamble = script[: script.index("fetch_source() {")]
+    reason = preamble[preamble.rindex("# Download, verify") :]
+
+    assert "ticket 27" in reason
+    assert "externalpackages" in reason, "the cost is PETSc's build tree, unnamed"
+
+
 def test_the_trio_pins_are_checked_against_the_verified_source_tree(script):
     """Upstream's own file, out of bytes this build pinned (ticket 10)."""
     dolfinx = stage(script, "DOLFINx (")
