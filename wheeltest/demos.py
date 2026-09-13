@@ -46,6 +46,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import urllib.error
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -492,7 +493,41 @@ def main(argv: Sequence[str] | None = None) -> int:
     chosen = subset(args.scalar_type)
     python = Path(sys.executable)
     launcher = environment.launcher(python)
-    directory = demo_dir(args.source) if args.source else fetch(args.cache)
+    if args.source:
+        directory = demo_dir(args.source)
+    else:
+        # Everything the fetch can answer with is this stage's own report
+        # rather than an exception out of it (ticket 33): a stage is a program
+        # that says what is wrong (CONTEXT.md, *Stage*), and a traceback is
+        # what a reader of the CI log would get instead of the sentence. The
+        # three branches are the ones wheelbuild.sources' own CLI keeps apart,
+        # for the reason recorded there: a refusal, a URL that cannot be
+        # reached and an archive that cannot be read are different answers,
+        # and a log has to be able to tell them apart.
+        #
+        # Only the fetch is wrapped. A --source the caller named is a path
+        # problem of theirs, and reporting a future ValueError from demo_dir
+        # as a refused download would name the wrong thing.
+        try:
+            directory = fetch(args.cache)
+        except ValueError as refused:
+            # sources.fetch's message, unwrapped: it is the one that names
+            # what was expected, what arrived, and that a refusal is not
+            # retried (ticket 28).
+            print(f"ERROR: {refused}", file=sys.stderr)
+            return 1
+        except urllib.error.URLError as unreachable:
+            print(
+                f"ERROR: cannot download the demo sources: {unreachable}",
+                file=sys.stderr,
+            )
+            return 1
+        except OSError as unreadable:
+            print(
+                f"ERROR: cannot read the demo source cache {args.cache}: {unreadable}",
+                file=sys.stderr,
+            )
+            return 1
 
     if args.work_dir.exists():
         shutil.rmtree(args.work_dir)

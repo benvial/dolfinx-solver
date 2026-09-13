@@ -1,5 +1,7 @@
 """The demo subset: what it has to cover, and how it is run."""
 
+import urllib.error
+
 import pytest
 
 from wheelbuild import dolfinx as dolfinx_driver
@@ -150,3 +152,97 @@ def test_a_demo_runs_the_way_a_user_runs_it():
 
     assert "PYTHONPATH" not in child
     assert child["HOME"] == "/home/user"
+
+
+#: What `wheelbuild.sources.fetch` raises a refusal with, shortened: the two
+#: digests are what a reader of the CI log needs, so the stage has to carry
+#: the message rather than replace it.
+REFUSAL = (
+    "/cache/dolfinx.tar.gz is not the archive this build pinned:\n"
+    "  expected " + "a" * 64 + "\n"
+    "  observed " + "b" * 64
+)
+
+
+def failing_main(monkeypatch, tmp_path, failure=None):
+    """Run `main` with the fetch raising, and nothing else able to run."""
+    failure = ValueError(REFUSAL) if failure is None else failure
+
+    def raise_it(_cache):
+        raise failure
+
+    monkeypatch.setattr(demos.environment, "launcher", lambda python: python)
+    monkeypatch.setattr(demos, "fetch", raise_it)
+    return demos.main(
+        [
+            "--site",
+            str(tmp_path / "site"),
+            "--work-dir",
+            str(tmp_path / "work"),
+            "--cache",
+            str(tmp_path / "cache"),
+        ]
+    )
+
+
+def test_a_refused_demo_archive_is_reported_rather_than_raised(
+    tmp_path, monkeypatch, capsys
+):
+    """A stage is a program that reports a written problem (CONTEXT.md,
+    *Stage*), and a traceback is what a reader sees instead of the sentence
+    saying which archive was refused (ticket 33)."""
+    status = failing_main(monkeypatch, tmp_path)
+
+    assert status == 1
+    errors = capsys.readouterr().err
+    assert errors.startswith("ERROR: ")
+    assert errors.count("ERROR: ") == 1
+
+
+def test_a_refused_demo_archive_still_names_both_digests(tmp_path, monkeypatch, capsys):
+    """`sources.fetch`'s own message is the one that names what was expected
+    and what arrived, and the refusal rule it stands for (ticket 28)."""
+    failing_main(monkeypatch, tmp_path)
+
+    errors = capsys.readouterr().err
+    assert "a" * 64 in errors
+    assert "b" * 64 in errors
+
+
+def test_a_refused_demo_archive_runs_no_demos(tmp_path, monkeypatch):
+    """There is nothing to run them out of, and `check` would report a
+    missing subset instead of the refusal."""
+
+    def never(*_args, **_kwargs):
+        raise AssertionError("the subset was run without demo sources")
+
+    monkeypatch.setattr(demos, "check", never)
+    assert failing_main(monkeypatch, tmp_path) == 1
+
+
+def test_a_demo_source_that_cannot_be_downloaded_is_told_apart_from_a_refusal(
+    tmp_path, monkeypatch, capsys
+):
+    """The distinction `wheelbuild.sources`' own CLI keeps: a 404 and a digest
+    refusal are different answers about different things."""
+    status = failing_main(
+        monkeypatch, tmp_path, urllib.error.URLError("Name or service not known")
+    )
+
+    assert status == 1
+    errors = capsys.readouterr().err
+    assert errors.startswith("ERROR: cannot download")
+    assert "Name or service not known" in errors
+
+
+def test_a_demo_source_cache_that_cannot_be_read_is_reported_as_itself(
+    tmp_path, monkeypatch, capsys
+):
+    """An unreadable cache names a local directory, which is the one thing the
+    other two messages must not be mistaken for."""
+    status = failing_main(monkeypatch, tmp_path, OSError("Permission denied"))
+
+    assert status == 1
+    errors = capsys.readouterr().err
+    assert errors.startswith("ERROR: cannot read")
+    assert str(tmp_path / "cache") in errors
