@@ -31,6 +31,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from wheelbuild import markers
 from wheelbuild.petsc import SCALAR_TYPE, SCALAR_TYPES
 
 if TYPE_CHECKING:
@@ -113,7 +114,7 @@ def claim_variant(prefix: Path, scalar_type: str = SCALAR_TYPE) -> Path:
             f"{', '.join(SCALAR_TYPES)} (spec §6)."
         )
     prefix.mkdir(parents=True, exist_ok=True)
-    marked = _marker_text(prefix / VARIANT_FILE)
+    marked = markers.text(prefix / VARIANT_FILE)
     claimed = _claimed_variant(prefix, marked)
     if claimed is not None and claimed != scalar_type:
         raise ValueError(
@@ -126,24 +127,11 @@ def claim_variant(prefix: Path, scalar_type: str = SCALAR_TYPE) -> Path:
             f"{claimed} stack rather than replace it. Point BUILD_ROOT at "
             "a second directory, one per variant."
         )
+    # The warm path does not write at all: the claim is already there, and a
+    # rewrite is a window ticket 24 has no reason to open.
     if marked != scalar_type:
-        _write_marker(prefix, scalar_type)
+        markers.write(prefix / VARIANT_FILE, scalar_type)
     return prefix
-
-
-def _write_marker(prefix: Path, scalar_type: str) -> None:
-    """Record the claim in one step that either happens or does not.
-
-    Writing the marker in place truncates it first, so a run killed in the
-    window between leaves an empty file — the state ticket 24 is about. The
-    warm path does not write at all (the claim is already there), and the one
-    that does writes a complete file beside the marker and renames it over,
-    which is atomic within a directory: an interrupted run leaves either the
-    old marker or the new one, never half of one.
-    """
-    temporary = prefix / f"{VARIANT_FILE}.new"
-    temporary.write_text(f"{scalar_type}\n", encoding="utf-8")
-    temporary.replace(prefix / VARIANT_FILE)
 
 
 def _claimed_variant(prefix: Path, marked: str | None) -> str | None:
@@ -151,9 +139,10 @@ def _claimed_variant(prefix: Path, marked: str | None) -> str | None:
 
     Args:
         prefix: The prefix to judge.
-        marked: What its variant marker says, as :func:`_marker_text` reports
-            it. Read by the caller, which also needs to know whether the
-            marker is already the claim being made.
+        marked: What its variant marker says, as
+            :func:`wheelbuild.markers.text` reports it. Read by the caller,
+            which also needs to know whether the marker is already the claim
+            being made.
 
     The marker is the answer once it exists and says something this build has
     a name for. Before it did, the PETSc stage's cache stamp was the only
@@ -164,9 +153,10 @@ def _claimed_variant(prefix: Path, marked: str | None) -> str | None:
     real one.
 
     A marker whose text is not one of :data:`SCALAR_TYPES` is treated as no
-    marker at all. ``claim_variant`` creates the file before it writes it, so
-    a run killed in between leaves an empty one — as does a truncated or
-    hand-edited file — and obeying that would refuse every build of *either*
+    marker at all. Markers are replaced rather than truncated
+    (:mod:`wheelbuild.markers`), so a killed run is no longer how an empty one
+    appears, but a truncated or hand-edited file still is — and obeying that
+    would refuse every build of *either*
     variant in the name of a variant that does not exist, with nothing to
     offer but deleting a prefix that holds hours of superbuild. The stamps are
     the better evidence anyway: they are written by the stage that did the
@@ -179,20 +169,6 @@ def _claimed_variant(prefix: Path, marked: str | None) -> str | None:
         if candidate in SCALAR_TYPES:
             return candidate
     return None
-
-
-def _marker_text(marker: Path) -> str | None:
-    """Return what the variant marker says, or ``None`` when it says nothing.
-
-    Anything the file cannot yield a string for — it is absent, it holds bytes
-    that are not UTF-8, it is a directory — is the same answer as an empty
-    one, because the caller judges the text against the variants it knows and
-    a marker outside that set is ignored either way.
-    """
-    try:
-        return marker.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeDecodeError):
-        return None
 
 
 def main(argv: Sequence[str] | None = None) -> int:

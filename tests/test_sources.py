@@ -557,3 +557,94 @@ def test_an_unchanged_demo_cache_is_reused(tmp_path):
     archive.unlink()
 
     assert demos.fetch(cache, expected=expected).is_dir()
+
+
+def test_an_undecodable_extracted_marker_re_extracts(tmp_path, monkeypatch):
+    """The guard is there so a tree nobody can vouch for is unpacked again.
+
+    A run killed while the marker was being written leaves bytes that are not
+    UTF-8, and reading them as a failure aborts the demo stage instead --
+    every run of the same commit, because the cache key moves only when the
+    version or the DOLFINx driver does.
+    """
+    from wheeltest import demos
+
+    cache = tmp_path / "demo-source"
+    archive = cache / f"{dolfinx.source_dir_name()}.tar.gz"
+    cache.mkdir()
+    demo_tarball(archive, text=b"the demo as it was")
+    expected = sources.digest(archive)
+    demos.fetch(cache, expected=expected)
+
+    marker = cache / dolfinx.source_dir_name() / demos.EXTRACTED_MARKER
+    marker.write_bytes(b"\xff\xfe")
+    demo_tarball(archive, text=b"the demo as it is now")
+    monkeypatch.setattr(sources, "download", never_downloads)
+
+    directory = demos.fetch(cache, expected=sources.digest(archive))
+
+    assert (directory / demos.DEMOS[0].name).read_bytes() == b"the demo as it is now"
+    assert marker.read_text(encoding="utf-8").strip() == sources.digest(archive)
+
+
+def never_downloads(_url, _path):
+    """A ``download`` that fails the test if the cached archive is enough."""
+    raise AssertionError("the archive in the cache is the pinned one")
+
+
+def test_an_undecodable_rejection_marker_is_no_standing_refusal(tmp_path, monkeypatch):
+    """The refusal rule answers rather than raises, on every input.
+
+    The marker is what a refused download leaves behind, so a run killed
+    while writing it is how undecodable bytes get there -- and nothing
+    rewrites the file afterwards. Read as a failure it puts a
+    ``UnicodeDecodeError`` past the rule and past the fall-through a marker
+    describing some other digest gets, and the build needs a human to delete
+    it.
+    """
+    archive = tmp_path / "source.tar.gz"
+    archive.write_bytes(b"a cache entry from an earlier pin")
+    sources.rejection(archive).write_bytes(b"\xff\xfe")
+    downloads = []
+    monkeypatch.setattr(sources, "download", counting(downloads, PINNED))
+
+    assert sources.fetch(CACHED_URL, archive, PINNED_SHA256) == archive
+    assert len(downloads) == 1
+    assert not sources.rejection(archive).exists()
+
+
+def test_a_refused_download_leaves_no_temporary_beside_the_archive(
+    tmp_path, monkeypatch
+):
+    """The rejection marker is renamed into place rather than written in it,
+    so the run that records a refusal leaves the marker and nothing else --
+    a cache kept between runs has nothing to clean up the rest away."""
+    archive = tmp_path / "source.tar.gz"
+    monkeypatch.setattr(sources, "download", counting([], b"not the pinned bytes"))
+
+    with pytest.raises(ValueError):
+        sources.fetch(CACHED_URL, archive, PINNED_SHA256)
+
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        archive.name,
+        sources.rejection(archive).name,
+    ]
+
+
+def test_extracting_leaves_no_temporary_marker_in_the_source_tree(tmp_path):
+    """The `.extracted` marker is renamed into place too, and the tree it
+    sits in is read by `demo_dir` and walked by the demos themselves."""
+    from wheeltest import demos
+
+    cache = tmp_path / "demo-source"
+    archive = cache / f"{dolfinx.source_dir_name()}.tar.gz"
+    cache.mkdir()
+    demo_tarball(archive)
+
+    demos.fetch(cache, expected=sources.digest(archive))
+
+    extracted = cache / dolfinx.source_dir_name()
+    assert [path.name for path in extracted.glob("*.new")] == []
+    assert (extracted / demos.EXTRACTED_MARKER).read_text(
+        encoding="utf-8"
+    ).strip() == sources.digest(archive)

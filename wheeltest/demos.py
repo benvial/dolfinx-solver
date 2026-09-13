@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 from wheelbuild import dolfinx as dolfinx_driver
-from wheelbuild import petsc, sources
+from wheelbuild import markers, petsc, sources
 from wheeltest import environment
 
 if TYPE_CHECKING:
@@ -190,7 +190,9 @@ DEMO_RELATIVE = Path("python") / "demo"
 #: Written inside an extracted tree, holding the digest it was extracted
 #: from. The same marker ``scripts/build-wheel.sh`` writes, for the same
 #: reason: the directory is named after the release, so the name alone cannot
-#: notice that the release's bytes were replaced.
+#: notice that the release's bytes were replaced. It is read and written under
+#: :mod:`wheelbuild.markers`' rules, so a tree whose marker a killed run left
+#: undecodable is unpacked again rather than aborting the stage.
 EXTRACTED_MARKER = ".extracted"
 
 #: The metadata lookup the payload cannot answer. DOLFINx's own
@@ -258,7 +260,7 @@ def fetch(cache: Path, url: str = "", expected: str = "") -> Path:
     extracted = cache / dolfinx_driver.source_dir_name()
     marker = extracted / EXTRACTED_MARKER
     unpacked = (extracted / DEMO_RELATIVE).is_dir()
-    verified = marker.read_text(encoding="utf-8").strip() if marker.is_file() else ""
+    verified = markers.text(marker)
     if not unpacked or verified != expected:
         # Nothing re-hashes an extracted tree, so the marker is what carries
         # the digest forward. Without it a digest moved without the version --
@@ -281,7 +283,7 @@ def fetch(cache: Path, url: str = "", expected: str = "") -> Path:
         shutil.rmtree(extracted, ignore_errors=True)
         with tarfile.open(archive) as tar:
             tar.extractall(cache, filter="data")
-        marker.write_text(f"{expected}\n", encoding="utf-8")
+        markers.write(marker, expected)
     return demo_dir(extracted)
 
 

@@ -40,6 +40,9 @@ anything — so re-running a failed job reports the same mismatch rather than
 quietly passing on the second attempt. It stops standing the moment anything
 it describes changes: a recorded digest that moved (the bump ticket 26 is
 about), or an archive deleted by the person the message asked to look at it.
+It is written and read under :mod:`wheelbuild.markers`' rules, so a run killed
+while writing it leaves the previous refusal rather than a file every later run
+raises on.
 """
 
 from __future__ import annotations
@@ -51,6 +54,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from wheelbuild import markers
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -274,12 +279,8 @@ def standing_refusal(archive: Path, expected: str, observed: str) -> str | None:
         A message, or ``None`` when there is no marker, when it describes
         some other digest, or when it cannot be read.
     """
-    marker = rejection(archive)
-    try:
-        recorded = marker.read_text(encoding="utf-8").split()
-    except OSError:
-        return None
-    if recorded[:2] != [expected, observed]:
+    recorded = markers.text(rejection(archive))
+    if recorded is None or recorded.split()[:2] != [expected, observed]:
         # Something it describes has moved: the driver's digest was bumped, or
         # the archive was replaced or deleted. Either way the refusal was
         # about a state that no longer exists.
@@ -351,7 +352,7 @@ def fetch(url: str, archive: Path, expected: str) -> Path:
     if problem is not None:
         # Recorded before raising, so the next run repeats this answer instead
         # of asking upstream again (ticket 26 restored ticket 10's rule here).
-        marker.write_text(f"{expected}\n{observed}\n", encoding="utf-8")
+        markers.write(marker, f"{expected}\n{observed}")
         raise ValueError(problem)
     marker.unlink(missing_ok=True)
     return archive
