@@ -440,12 +440,38 @@ PROJECT_METADATA = (
 )
 
 
-def _repository(root: Path, pyproject: str = PROJECT_METADATA) -> Path:
+#: The passages of the checked-in ``README.md`` that name the variant. It is
+#: the wheel's ``Description``, so the real wheel's project page is what these
+#: decide (ticket 32).
+README = (
+    "DOLFINx packaged as a Linux binary wheel, with a **complex-scalar PETSc "
+    "and SLEPc inside the wheel**.\n"
+    "\n"
+    "```console\n"
+    "pip install dolfinx-solver          # the complex build, via the meta-package\n"
+    "pip install dolfinx-solver-complex  # the same wheel, named directly\n"
+    "```\n"
+    "\n"
+    'assert PETSc.ScalarType.__name__ == "complex128"\n'
+    "\n"
+    "DOLFINx's C++ core and nanobind bindings, complex-scalar PETSc and SLEPc "
+    "with petsc4py and slepc4py built against exactly those.\n"
+    "\n"
+    "The real-scalar build is published separately as `dolfinx-solver-real`;\n"
+    "PETSc's scalar type is baked into the binaries, so it cannot be switched\n"
+    "at runtime.\n"
+)
+
+
+def _repository(
+    root: Path, pyproject: str = PROJECT_METADATA, readme: str = README
+) -> Path:
     """Lay out the files :data:`assemble.SOURCE_INPUTS` names."""
     (root / "dolfinx_solver").mkdir(parents=True, exist_ok=True)
     (root / "dolfinx_solver" / "__init__.py").write_text("")
-    for name in ("README.md", "LICENSE", "LICENSE.GPL-3.0"):
+    for name in ("LICENSE", "LICENSE.GPL-3.0"):
         (root / name).write_text("")
+    (root / "README.md").write_text(readme)
     (root / "pyproject.toml").write_text(pyproject)
     return root
 
@@ -812,11 +838,77 @@ def test_metadata_the_substitution_cannot_place_fails_the_build(text):
 
 
 def test_the_source_copy_retargets_the_metadata_it_copies(tmp_path):
-    """The one file in SOURCE_INPUTS that is not copied verbatim."""
+    """One of the two files in SOURCE_INPUTS that are not copied verbatim."""
     repo = _repository(tmp_path / "repo")
 
     copied = assemble.source_copy(tmp_path / "copy", repo_root=repo)
 
     assert f'name = "dolfinx-solver-{petsc.SCALAR_TYPE}"' in (
         copied / "pyproject.toml"
+    ).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("variant", petsc.SCALAR_TYPES)
+def test_the_copied_readme_describes_the_variant_being_built(variant):
+    """It becomes the wheel's `Description`, which is the project page: a
+    verbatim copy would sell the real wheel as a complex-scalar build and
+    print the other distribution's install line under it (ticket 32)."""
+    other = next(name for name in petsc.SCALAR_TYPES if name != variant)
+
+    retargeted = assemble.retarget_readme(README, scalar_type=variant)
+
+    assert f"**{variant}-scalar PETSc and SLEPc inside the wheel**" in retargeted
+    assert f"{other}-scalar PETSc and SLEPc inside the wheel" not in retargeted
+    assert f"pip install dolfinx-solver-{variant}" in retargeted
+    assert f"pip install dolfinx-solver-{other}" not in retargeted
+    assert f"published separately as `dolfinx-solver-{other}`" in retargeted
+
+
+@pytest.mark.parametrize("variant", petsc.SCALAR_TYPES)
+def test_the_copied_readme_shows_the_scalar_type_the_wheel_has(variant):
+    """The snippet is what a reader runs first; the complex one's assertion
+    raises a TypeError on a real build."""
+    expected = {"complex": "complex128", "real": "float64"}[variant]
+
+    retargeted = assemble.retarget_readme(README, scalar_type=variant)
+
+    assert f'assert PETSc.ScalarType.__name__ == "{expected}"' in retargeted
+
+
+def test_the_checked_in_readme_is_the_default_variants_own():
+    """The same rule the metadata follows: a copy for the declared variant
+    comes out byte-identical, so GitHub's README and the complex wheel's
+    project page are the same text."""
+    checked_in = (assemble.REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert (
+        assemble.retarget_readme(checked_in, scalar_type=petsc.DEFAULT_SCALAR_TYPE)
+        == checked_in
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "pip install dolfinx-solver\n",
+        README.replace("```console", "```bash"),
+        README * 2,
+    ],
+)
+def test_a_readme_the_substitutions_cannot_place_fails_the_build(text):
+    """A silent miss would publish a wheel whose page describes the other
+    variant, which is the failure this file exists to prevent."""
+    with pytest.raises(ValueError, match=r"README\.md"):
+        assemble.retarget_readme(text, scalar_type="real")
+
+
+def test_the_source_copy_retargets_the_readme_it_copies(tmp_path):
+    """The second file in SOURCE_INPUTS that is not copied verbatim."""
+    repo = _repository(tmp_path / "repo")
+
+    copied = assemble.source_copy(tmp_path / "copy", repo_root=repo)
+
+    assert f"pip install dolfinx-solver-{petsc.SCALAR_TYPE}" in (
+        copied / "README.md"
     ).read_text(encoding="utf-8")

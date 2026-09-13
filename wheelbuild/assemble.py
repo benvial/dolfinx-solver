@@ -232,6 +232,112 @@ def retarget_project(text: str, *, scalar_type: str = petsc.SCALAR_TYPE) -> str:
     return text
 
 
+#: What `README.md` says that is true of one variant only. It is the wheel's
+#: ``Description`` — `readme` in ``pyproject.toml`` — so it is the project
+#: page a user reads before installing, and a verbatim copy would sell
+#: `dolfinx-solver-real` as a complex-scalar build under the complex
+#: distribution's install line (ticket 32).
+#:
+#: Each entry is a pattern, the number of times it has to match, and the
+#: replacement for each variant. Two of them are word substitutions and two
+#: are whole passages, because what the other variant needs said is different
+#: rather than differently spelled: the meta-package resolves to the complex
+#: wheel whichever page names it (ticket 23), and the scalar type a reader
+#: checks first is asserted in the snippet.
+#:
+#: The counts are asserted for the reason :data:`PROJECT_VARIANT_LINES`'
+#: are: a substitution that quietly placed nothing publishes a page
+#: describing the other wheel, and nothing downstream would notice.
+README_VARIANT_TEXT: tuple[tuple[re.Pattern[str], int, dict[str, str]], ...] = (
+    (
+        re.compile(r"\b(?:complex|real)(-scalar PETSc and SLEPc)"),
+        2,
+        {variant: rf"{variant}\g<1>" for variant in petsc.SCALAR_TYPES},
+    ),
+    (
+        re.compile(r"```console\npip install dolfinx-solver.*?```", re.DOTALL),
+        1,
+        {
+            "complex": (
+                "```console\n"
+                "pip install dolfinx-solver          "
+                "# the complex build, via the meta-package\n"
+                "pip install dolfinx-solver-complex  "
+                "# the same wheel, named directly\n"
+                "```"
+            ),
+            "real": (
+                "```console\n"
+                "pip install dolfinx-solver-real     "
+                "# the real-scalar build, named directly\n"
+                "pip install dolfinx-solver          "
+                "# the complex build, via the meta-package\n"
+                "```"
+            ),
+        },
+    ),
+    (
+        re.compile(r'assert PETSc\.ScalarType\.__name__ == "\w+"'),
+        1,
+        {
+            "complex": 'assert PETSc.ScalarType.__name__ == "complex128"',
+            "real": 'assert PETSc.ScalarType.__name__ == "float64"',
+        },
+    ),
+    (
+        re.compile(
+            r"The (?:complex|real)-scalar build is published separately.*?"
+            r"at runtime\.",
+            re.DOTALL,
+        ),
+        1,
+        {
+            "complex": (
+                "The real-scalar build is published separately as "
+                "`dolfinx-solver-real`; PETSc's\nscalar type is baked into the "
+                "binaries, so it cannot be switched at runtime."
+            ),
+            "real": (
+                "The complex-scalar build is published separately as "
+                "`dolfinx-solver-complex`, and\nis what `pip install "
+                "dolfinx-solver` resolves to; PETSc's scalar type is baked\n"
+                "into the binaries, so it cannot be switched at runtime."
+            ),
+        },
+    ),
+)
+
+
+def retarget_readme(text: str, *, scalar_type: str = petsc.SCALAR_TYPE) -> str:
+    """Return ``README.md`` rewritten for one scalar variant.
+
+    Args:
+        text: The checked-in readme, which is the declared variant's.
+        scalar_type: The variant this build is for.
+
+    Returns:
+        The same text describing that variant: the scalar type it ships, the
+        install line that installs it, the snippet's assertion, and which
+        distribution the other build is published under. Text already
+        describing it comes back unchanged.
+
+    Raises:
+        ValueError: When any passage is not there the number of times this
+            driver expects, which means the readme and this driver have
+            drifted apart — and a readme that is copied unretargeted is a
+            project page for the other wheel.
+    """
+    for pattern, occurrences, replacements in README_VARIANT_TEXT:
+        text, placed = pattern.subn(replacements[scalar_type], text)
+        if placed != occurrences:
+            raise ValueError(
+                f"README.md has {placed} passages matching {pattern.pattern!r} "
+                f"and this build needs {occurrences}: the wheel's description "
+                f"would not be the {scalar_type}-scalar one."
+            )
+    return text
+
+
 #: Tag the assembled wheel carries before ``auditwheel`` decides which
 #: manylinux it qualifies for: one interpreter tag, the stable ABI, and the
 #: platform spelled the way a freshly-linked binary is (spec §4).
@@ -344,11 +450,17 @@ def source_copy(destination: Path, repo_root: Path = REPO_ROOT) -> Path:
         else:
             shutil.copy2(source, destination / name)
 
-    # The one input that is not copied verbatim: the metadata names the
-    # variant, and the variant is what this build was told to produce.
+    # The two inputs that are not copied verbatim: the metadata names the
+    # variant, and the readme describes it — `readme` in pyproject.toml makes
+    # the second one the wheel's Description, which is the project page
+    # (ticket 32). The variant is what this build was told to produce.
     project = destination / "pyproject.toml"
     project.write_text(
         retarget_project(project.read_text(encoding="utf-8")), encoding="utf-8"
+    )
+    readme = destination / "README.md"
+    readme.write_text(
+        retarget_readme(readme.read_text(encoding="utf-8")), encoding="utf-8"
     )
     return destination
 

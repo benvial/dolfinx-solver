@@ -250,6 +250,21 @@ def test_the_packaging_metadata_follows_the_flip():
     assert f"with {FLIPPED}-scalar PETSc" in retargeted
 
 
+def test_the_project_page_follows_the_flip():
+    """The readme is the wheel's `Description`, so this is the page a user
+    reads before installing the flipped variant (ticket 32). The complex
+    wheel's install line may not appear on it, and the snippet it shows has
+    to be one that runs on this build."""
+    checked_in = (assemble.REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
+    retargeted = assemble.retarget_readme(checked_in, scalar_type=FLIPPED)
+
+    assert f"**{FLIPPED}-scalar PETSc and SLEPc inside the wheel**" in retargeted
+    assert f"pip install dolfinx-solver-{FLIPPED}" in retargeted
+    assert f"pip install dolfinx-solver-{OTHER[FLIPPED]}" not in retargeted
+    assert 'assert PETSc.ScalarType.__name__ == "float64"' in retargeted
+
+
 def test_the_wheel_the_suite_looks_for_is_the_variants_own():
     """Both wheelhouses hold one wheel each, and a tests job is handed the
     artefact of the job that built its variant (ticket 21)."""

@@ -14,7 +14,7 @@ import dolfinx_solver  # noqa: F401 - orders MPI ahead of the bindings
 import dolfinx
 from petsc4py import PETSc
 
-assert PETSc.ScalarType(1j).imag == 1.0
+assert PETSc.ScalarType.__name__ == "complex128"
 ```
 
 Import `dolfinx_solver` **before** `dolfinx`, `petsc4py` or `slepc4py`.
@@ -24,7 +24,7 @@ petsc4py would shadow the vendored one.
 
 ## What is in the wheel
 
-DOLFINx's C++ core and nanobind bindings, complex PETSc and SLEPc with
+DOLFINx's C++ core and nanobind bindings, complex-scalar PETSc and SLEPc with
 petsc4py and slepc4py built against exactly those, and the vendored native
 stack (HDF5-parallel, SuperLU_DIST, MUMPS, PT-SCOTCH, OpenBLAS, ADIOS2 and
 friends). `fenics-basix`, `fenics-ffcx` and `fenics-ufl` come from PyPI at
@@ -78,7 +78,7 @@ and run the whole thing, or one stage at a time:
 ```console
 scripts/test-wheel.sh                 # every stage, one venv
 scripts/wheel-test.sh                 # install, import order, foreign petsc4py
-scripts/smoke-test.sh                 # complex Helmholtz and a SLEPc eigensolve
+scripts/smoke-test.sh                 # the variant's problem and an eigensolve
 scripts/interop-test.sh               # mpiexec -n 2, one shared communicator
 scripts/demo-test.sh                  # five upstream DOLFINx demos
 ```
