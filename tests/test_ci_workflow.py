@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from wheelbuild.petsc import SCALAR_TYPE
+from wheelbuild.petsc import SCALAR_TYPE_VARIABLE, SCALAR_TYPES
 from wheelbuild.version import DOLFINX_VERSION
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -91,8 +91,8 @@ def test_the_cache_does_not_carry_what_is_rebuilt_every_run(workflow):
 
     dropped = _step(workflow, "wheel", "Drop what the cache must not carry")
 
-    assert ".build-cache/assemble" in dropped["run"]
-    assert ".build-cache/wheelhouse" in dropped["run"]
+    assert "$BUILD_ROOT/assemble" in dropped["run"]
+    assert "$BUILD_ROOT/wheelhouse" in dropped["run"]
     assert dropped["if"] == "always()"
 
 
@@ -145,10 +145,48 @@ def test_the_cache_key_covers_every_input_to_a_build_stage(workflow, hashed):
 
 
 def test_the_cache_key_names_the_scalar_type_the_variant_is_built_for(workflow):
-    """Ticket 12: the real variant must not share this entry (spec §6)."""
-    key = _step(workflow, "wheel", "Restore the superbuild cache")["with"]["key"]
+    """Ticket 12, then 21: two jobs build two variants, and neither may
+    restore the other's prefix — the stamps in it say "already built" for a
+    stack of the wrong scalar type (spec §6). The matrix value is in the key
+    rather than a literal, so the job that builds a variant is the job that
+    names it."""
+    cache = _step(workflow, "wheel", "Restore the superbuild cache")["with"]
 
-    assert SCALAR_TYPE in key
+    assert "matrix.scalar-type" in cache["key"]
+    assert "matrix.scalar-type" in cache["restore-keys"]
+    for variant in SCALAR_TYPES:
+        assert variant not in cache["key"]
+
+
+def test_the_wheel_job_builds_every_variant_the_drivers_name(workflow):
+    """Ticket 21: one workflow, both distributions (spec §6). A third variant
+    added to the drivers is one the workflow has to grow a job for."""
+    matrix = workflow["jobs"]["wheel"]["strategy"]["matrix"]["scalar-type"]
+
+    assert matrix == list(SCALAR_TYPES)
+    assert workflow["jobs"]["wheel"]["strategy"]["fail-fast"] is False
+
+
+def test_the_variant_a_job_builds_is_declared_in_one_place(workflow):
+    """`wheelbuild.petsc` resolves this variable once, and everything that
+    reads the scalar type reads what it resolved — the configure line, the
+    cache stamps, the prefix claim, the distribution name and the notices."""
+    for job in ("wheel", "tests"):
+        assert (
+            workflow["jobs"][job]["env"][SCALAR_TYPE_VARIABLE]
+            == "${{ matrix.scalar-type }}"
+        )
+
+
+def test_each_variant_builds_in_its_own_build_root(workflow):
+    """`wheelbuild.prefix.claim_variant` refuses a prefix built for the other
+    one (ticket 17), so sharing a directory is a failed job rather than a
+    stale build — and the cached tree is the build root itself."""
+    build_root = workflow["jobs"]["wheel"]["env"]["BUILD_ROOT"]
+    cache = _step(workflow, "wheel", "Restore the superbuild cache")["with"]
+
+    assert "matrix.scalar-type" in build_root
+    assert cache["path"] == "${{ env.BUILD_ROOT }}"
 
 
 def test_an_older_cache_entry_is_accepted_when_a_driver_changes(workflow):
@@ -163,7 +201,7 @@ def test_the_published_wheel_comes_from_the_build_roots_wheelhouse(workflow):
     """The install prefix holds another one, of artefacts that never ship."""
     collected = _step(workflow, "wheel", "Collect the wheel")["run"]
 
-    assert ".build-cache/wheelhouse/*.whl" in collected
+    assert '"$BUILD_ROOT"/wheelhouse/*.whl' in collected
     assert "install" not in collected
 
 
@@ -173,6 +211,33 @@ def test_the_wheel_is_uploaded_and_a_missing_one_fails_the_job(workflow):
             assert step["with"]["if-no-files-found"] == "error"
             return
     raise AssertionError("the wheel job uploads nothing")
+
+
+def test_each_variants_wheel_is_its_own_artefact(workflow):
+    """Two jobs upload, and an artifact name is unique per workflow run: one
+    name would be the second job failing on a name the first one took."""
+    uploaded = next(
+        step["with"]["name"]
+        for step in _steps(workflow, "wheel")
+        if str(step.get("uses", "")).startswith("actions/upload-artifact")
+    )
+    downloaded = next(
+        step["with"]["name"]
+        for step in _steps(workflow, "tests")
+        if str(step.get("uses", "")).startswith("actions/download-artifact")
+    )
+
+    assert "matrix.scalar-type" in uploaded
+    assert downloaded == uploaded
+
+
+def test_every_variant_is_tested_on_every_interpreter(workflow):
+    """The two axes are independent: one abi3 wheel per variant, three
+    interpreters each."""
+    matrix = workflow["jobs"]["tests"]["strategy"]["matrix"]
+
+    assert matrix["scalar-type"] == list(SCALAR_TYPES)
+    assert len(matrix["python-version"]) == 3
 
 
 def test_the_wheel_is_tested_outside_the_image_that_built_it(workflow):
@@ -257,3 +322,13 @@ def test_the_mirrored_release_is_the_one_the_demo_cache_is_keyed_on():
     assert DOLFINX_VERSION in (REPO_ROOT / "dolfinx_solver" / "_version.py").read_text(
         encoding="utf-8"
     )
+
+
+def test_one_variant_failing_to_build_still_tests_the_other(workflow):
+    """`needs` waits for the whole matrix and skips dependents when any leg
+    fails, so the wheel job's fail-fast: false would buy nothing: the variant
+    that did build would go untested (ticket 21)."""
+    tests = workflow["jobs"]["tests"]
+
+    assert tests["needs"] == "wheel"
+    assert "cancelled()" in tests["if"]

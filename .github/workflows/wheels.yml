@@ -1,11 +1,13 @@
-# Build the dolfinx-solver-complex wheel and prove it, on every push.
+# Build both dolfinx-solver wheels and prove them, on every push.
 #
 # Three jobs, in the order a failure is cheapest to find in:
 #
 #   checks  seconds, and needs nothing built: lint, types, unit tests, and the
 #           two pin checks that tie this repository's metadata to things
 #           outside it — the MPICH series the wheel vendors half of, and
-#           upstream DOLFINx's own trio pins (spec §10).
+#           upstream DOLFINx's own trio pins (spec §10). One job, not one per
+#           variant: nothing it runs compiles anything, and the flip itself is
+#           what tests/test_real_variant.py puts to the drivers.
 #   wheel   the compile, in the manylinux_2_34 image the wheel claims. Cold it
 #           is a multi-hour superbuild; warm it re-proves the seven cached
 #           stages in about a minute and assembles the wheel. What decides
@@ -15,6 +17,16 @@
 #           put through the whole wheeltest suite — on the plain runner, never
 #           in the build image, because manylinux_2_34 is a promise about
 #           other machines and the image that compiled it cannot test that.
+#
+# The last two are a matrix over the scalar type, which is what makes
+# dolfinx-solver-complex and dolfinx-solver-real two jobs of one workflow
+# rather than one workflow and a manual flip (spec §6, ticket 21). Each job
+# sets DOLFINX_SOLVER_SCALAR_TYPE, and wheelbuild.petsc resolves it once into
+# the value every driver, check, name and notice line reads; nothing else in
+# the build is told which variant it is producing. The two builds share
+# nothing: their own cache entry, their own build root — a prefix records the
+# variant that claimed it and refuses the other (ticket 17) — and their own
+# artefact.
 #
 # Publishing is deliberately not here: a `v*` tag gets as far as a tested
 # wheel, and the upload is its own workflow (spec §9).
@@ -97,15 +109,38 @@ jobs:
         run: python -m wheelbuild.tag_check "${GITHUB_REF_NAME}"
 
   wheel:
-    name: wheel (manylinux_2_34_x86_64)
+    name: wheel (${{ matrix.scalar-type }}, manylinux_2_34_x86_64)
     needs: checks
     runs-on: ubuntu-latest
     # A cold superbuild — OpenBLAS, ScaLAPACK, METIS, PT-SCOTCH, MUMPS,
     # SuperLU_DIST, HDF5, ADIOS2, KaHIP, DOLFINx — is hours. A warm one is
     # minutes. The limit is sized for the first of those.
     timeout-minutes: 350
+    strategy:
+      # One variant failing is a fact about that variant. They share no build
+      # state, so the other is still worth having.
+      fail-fast: false
+      matrix:
+        # Both distributions this project publishes (spec §6). The pair is
+        # asserted against wheelbuild.petsc.SCALAR_TYPES, which is where a
+        # variant is added.
+        scalar-type: [complex, real]
     container:
       image: quay.io/pypa/manylinux_2_34_x86_64
+    env:
+      # The one thing that differs between the two jobs. Every driver reads
+      # the scalar type from wheelbuild.petsc, which resolves this once — so
+      # this value reaches the PETSc configure line, the cache stamp names,
+      # the claim on the install prefix, the distribution name the base wheel
+      # is built under, and the notice text, without being passed to any of
+      # them.
+      DOLFINX_SOLVER_SCALAR_TYPE: ${{ matrix.scalar-type }}
+      # One build root per variant, because one prefix holds one scalar type:
+      # PetscScalar is baked into libpetsc, the bindings and DOLFINx alike,
+      # and the cache stamps are never pruned, so the second variant would
+      # find the first one's stamps. wheelbuild.prefix refuses that outright
+      # (ticket 17) — this is what keeps it from arising.
+      BUILD_ROOT: ${{ github.workspace }}/.build-cache-${{ matrix.scalar-type }}
     steps:
       - uses: actions/checkout@v5
 
@@ -124,19 +159,22 @@ jobs:
       # the drivers themselves, the script that names the cache stamps
       # (ticket 11), and pyproject.toml, whose trio pins are the releases
       # DOLFINx's C++ core compiles against. The scalar type is in the key by
-      # name as well as by driver hash, so that building the real variant
-      # (spec §6) alongside this one cannot make the two share an entry.
+      # name as well as by driver hash, because the drivers now hash the same
+      # either way: the variant comes from this job's environment, so nothing
+      # in wheelbuild/**/*.py differs between the two and the name is the only
+      # thing keeping them out of each other's entry.
       #
       # The restore-keys prefix deliberately accepts an older entry when the
       # exact key misses: the stamps inside decide what is rebuilt, and a
-      # stale ccache is worth far more than a cold one.
+      # stale ccache is worth far more than a cold one. It carries the variant
+      # too, so "older" never means "the other variant's".
       - name: Restore the superbuild cache
         uses: actions/cache@v4
         with:
-          path: .build-cache
-          key: superbuild-complex-manylinux_2_34_x86_64-${{ hashFiles('wheelbuild/**/*.py', 'scripts/build-wheel.sh', 'dolfinx_solver/_version.py', 'pyproject.toml') }}
+          path: ${{ env.BUILD_ROOT }}
+          key: superbuild-${{ matrix.scalar-type }}-manylinux_2_34_x86_64-${{ hashFiles('wheelbuild/**/*.py', 'scripts/build-wheel.sh', 'dolfinx_solver/_version.py', 'pyproject.toml') }}
           restore-keys: |
-            superbuild-complex-manylinux_2_34_x86_64-
+            superbuild-${{ matrix.scalar-type }}-manylinux_2_34_x86_64-
 
       # What a restored cache is worth is readable before the build starts:
       # each stage writes its stamp only after its driver has installed *and*
@@ -146,16 +184,14 @@ jobs:
       # makes visible rather than mysterious.
       - name: Report what the cache restored
         run: |
-          echo "stages already built in the restored prefix:"
-          ls -1a .build-cache/install 2>/dev/null | grep '\.installed$' || \
+          echo "stages already built in the restored ${{ matrix.scalar-type }} prefix:"
+          ls -1a "$BUILD_ROOT/install" 2>/dev/null | grep '\.installed$' || \
             echo "  (none — this is a cold build)"
 
       # The container *is* the build environment here, so build-wheel.sh runs
       # directly rather than through scripts/build-in-container.sh, which is
       # the local entry point that starts one.
       - name: Build the wheel
-        env:
-          BUILD_ROOT: ${{ github.workspace }}/.build-cache
         run: scripts/build-wheel.sh
 
       # The cached tree is root-owned — the container build runs as root — and
@@ -165,7 +201,7 @@ jobs:
       - name: Collect the wheel
         run: |
           mkdir -p wheelhouse
-          cp .build-cache/wheelhouse/*.whl wheelhouse/
+          cp "$BUILD_ROOT"/wheelhouse/*.whl wheelhouse/
           ls -l wheelhouse
 
       # Two directories under the build root are rebuilt from scratch by the
@@ -179,25 +215,47 @@ jobs:
       # `always()` because a failed build leaves the same scratch behind.
       - name: Drop what the cache must not carry
         if: always()
-        run: rm -rf .build-cache/assemble .build-cache/wheelhouse
+        run: rm -rf "$BUILD_ROOT/assemble" "$BUILD_ROOT/wheelhouse"
 
+      # One artefact per variant: an artifact name is unique within a run, so
+      # a shared one would be the second job failing on the name the first
+      # took — and the tests jobs would have no way to ask for the wheel of
+      # the variant they are testing.
       - uses: actions/upload-artifact@v4
         with:
-          name: wheelhouse
+          name: wheelhouse-${{ matrix.scalar-type }}
           path: wheelhouse/*.whl
           if-no-files-found: error
 
   tests:
-    name: tests (python ${{ matrix.python-version }})
+    name: tests (${{ matrix.scalar-type }}, python ${{ matrix.python-version }})
     needs: wheel
+    # `needs` waits for the whole matrix, and a failed leg skips every
+    # dependent job by default — so one variant failing to compile would take
+    # the other variant's three test jobs with it, which is exactly what
+    # fail-fast: false above is there to prevent. Without cancellation, the
+    # jobs run and each asks for its own variant's artefact: the three that
+    # have one test it, and the three that do not fail at the download, which
+    # is the honest report — "this variant produced no wheel" — rather than a
+    # grey skip that says nothing about either variant.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       # One interpreter failing is a fact about that interpreter, and the
-      # other two are still worth knowing.
+      # other five jobs are still worth knowing.
       fail-fast: false
       matrix:
+        # Two independent axes: one abi3 wheel per variant, and each of them
+        # installed on all three interpreters it claims.
+        scalar-type: [complex, real]
         python-version: ['3.12', '3.13', '3.14']
+    env:
+      # The suite reads it the way the build does — through wheelbuild.petsc,
+      # which is what decides the wheel the suite looks for, the problem the
+      # smoke stage solves, the demo subset, and the scalar type the import
+      # check proves (tickets 17, 22).
+      DOLFINX_SOLVER_SCALAR_TYPE: ${{ matrix.scalar-type }}
     steps:
       - uses: actions/checkout@v5
 
@@ -209,7 +267,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: wheelhouse
+          name: wheelhouse-${{ matrix.scalar-type }}
           path: wheelhouse
 
       # The suite itself imports this repository's driver packages, which need

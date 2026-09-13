@@ -331,3 +331,41 @@ def test_validate_refuses_a_build_missing_a_solver(tmp_path):
 
     with pytest.raises(ValueError, match="MUMPS"):
         petsc.validate(prefix, build)
+
+
+#: The workflow's matrix picks the variant per job through this variable, and
+#: `declared_scalar_type` is the one place it is read (ticket 21).
+VARIABLE = petsc.SCALAR_TYPE_VARIABLE
+
+
+def test_the_declared_variant_is_the_drivers_own_when_nothing_chooses_one():
+    """A developer's build, and every unit test here, gets the default."""
+    assert petsc.declared_scalar_type({}) == petsc.DEFAULT_SCALAR_TYPE
+    assert petsc.DEFAULT_SCALAR_TYPE in petsc.SCALAR_TYPES
+
+
+@pytest.mark.parametrize("variant", petsc.SCALAR_TYPES)
+def test_the_environment_picks_the_variant_the_job_builds(variant):
+    assert petsc.declared_scalar_type({VARIABLE: variant}) == variant
+
+
+def test_an_empty_value_is_not_a_variant_and_is_not_a_failure():
+    """An unset variable and one set to nothing mean the same thing, which is
+    what an expression expanding to no matrix value leaves behind."""
+    assert petsc.declared_scalar_type({VARIABLE: ""}) == petsc.DEFAULT_SCALAR_TYPE
+    assert petsc.declared_scalar_type({VARIABLE: "  "}) == petsc.DEFAULT_SCALAR_TYPE
+
+
+def test_a_variant_the_drivers_do_not_name_is_refused_rather_than_assumed():
+    """Ticket 24's reading: a value nothing can build must refuse both
+    variants rather than be read as "not complex" by every later check."""
+    with pytest.raises(ValueError, match=VARIABLE):
+        petsc.declared_scalar_type({VARIABLE: "Complex"})
+
+    with pytest.raises(ValueError, match="double"):
+        petsc.declared_scalar_type({VARIABLE: "double"})
+
+
+def test_the_module_constant_is_what_the_environment_declared():
+    """Every module that reads the variant reads this one, at import."""
+    assert petsc.declared_scalar_type() == petsc.SCALAR_TYPE

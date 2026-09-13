@@ -16,6 +16,7 @@ from packaging.utils import canonicalize_name
 from packaging.version import Version
 
 from wheelbuild.mpich import MPICH_VERSION
+from wheelbuild.petsc import DEFAULT_SCALAR_TYPE
 from wheelbuild.pin_check import expected_specifier
 from wheelbuild.version import __version__
 
@@ -50,8 +51,12 @@ def meta() -> dict:
     return _project(META_PROJECT)
 
 
-def test_the_binary_distribution_is_the_complex_variant(binary):
-    assert binary["name"] == "dolfinx-solver-complex"
+def test_the_binary_distribution_is_the_default_variant(binary):
+    """The checked-in metadata is one variant's, and the wheel job's other
+    matrix leg retargets a copy of it (ticket 21,
+    `wheelbuild.assemble.retarget_project`). It is the default one, so that a
+    contributor's `pip install -e .` installs the name CI publishes."""
+    assert binary["name"] == f"dolfinx-solver-{DEFAULT_SCALAR_TYPE}"
 
 
 def test_the_binary_distribution_reads_its_version_from_the_module(binary):
@@ -125,7 +130,13 @@ def test_the_meta_package_holds_the_bare_name(meta):
 
 
 def test_the_meta_package_pins_the_variant_it_defaults_to(meta):
-    assert meta["dependencies"] == [f"dolfinx-solver-complex=={__version__}"]
+    """`pip install dolfinx-solver` picks a variant, and it picks the one the
+    drivers default to — the complex build oslumen's photonics workloads need
+    (spec §1). A matrix that publishes both does not change which one the bare
+    name means."""
+    assert meta["dependencies"] == [
+        f"dolfinx-solver-{DEFAULT_SCALAR_TYPE}=={__version__}"
+    ]
 
 
 def test_the_meta_package_releases_in_lockstep(meta):

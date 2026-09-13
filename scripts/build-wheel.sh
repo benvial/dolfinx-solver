@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the dolfinx-solver-complex wheel's vendored stack.
+# Build one dolfinx-solver wheel's vendored stack, complex-scalar or real.
 #
 # Runs *inside* a manylinux_2_34 container; scripts/build-in-container.sh is
 # what starts one. Each stage is a wheelbuild driver module (spec §8) invoked
@@ -21,6 +21,10 @@
 #   JOBS         parallel build jobs (default: nproc)
 #   PYTHON       interpreter the build venv is made from (default: the image's
 #                cp312, which is the interpreter the abi3 wheel targets)
+#   DOLFINX_SOLVER_SCALAR_TYPE  which variant to build: complex (the default)
+#                or real. Read by wheelbuild.petsc, never by this script —
+#                the value below comes from the driver, so every stage, stamp
+#                and name agrees with it (spec §6)
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -135,8 +139,10 @@ python -m wheelbuild.pin_check
 
 # The scalar type is read once, here, and every stage below takes it from
 # this variable: the stamp names, the PETSc driver's flag, and the claim the
-# prefix is about to make. The real variant (spec §6) is the flip of
-# wheelbuild.petsc.SCALAR_TYPE and nothing else in this script.
+# prefix is about to make. The real variant (spec §6) is that driver value
+# being `real` and nothing else in this script — which is what the wheels
+# workflow's matrix arranges, a job per variant, by setting
+# DOLFINX_SOLVER_SCALAR_TYPE in the environment this runs in.
 scalar_type="$(driver 'from wheelbuild.petsc import SCALAR_TYPE; print(SCALAR_TYPE)')"
 [[ -n "$scalar_type" ]] || { echo "could not read SCALAR_TYPE" >&2; exit 1; }
 

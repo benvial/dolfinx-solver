@@ -467,7 +467,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--cache",
         type=Path,
-        default=Path(".build-cache") / "demo-source",
+        default=Path(f".build-cache-{petsc.SCALAR_TYPE}") / "demo-source",
         help="where the pinned release is downloaded and extracted",
     )
     parser.add_argument("--work-dir", type=Path, required=True)

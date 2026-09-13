@@ -65,7 +65,7 @@ def test_the_wheel_is_named_and_tagged_the_way_the_spec_says():
     """One abi3 wheel per release, manylinux_2_34 (spec §2, §4)."""
     assert assemble.WHEEL_TAG == "cp312-abi3-manylinux_2_34_x86_64"
     assert assemble.wheel_name(assemble.WHEEL_TAG) == (
-        f"dolfinx_solver_complex-{version.__version__}"
+        f"dolfinx_solver_{petsc.SCALAR_TYPE}-{version.__version__}"
         "-cp312-abi3-manylinux_2_34_x86_64.whl"
     )
 
@@ -432,15 +432,30 @@ def test_packing_and_unpacking_keep_the_executable_bit(tmp_path):
     assert (restored / "dolfinx_solver/lib/libpetsc.so.3.25").stat().st_mode & 0o111
 
 
+#: The two lines of the checked-in ``pyproject.toml`` that name the variant.
+PROJECT_METADATA = (
+    'name = "dolfinx-solver-complex"\n'
+    'description = "DOLFINx (FEniCSx) with complex-scalar PETSc and SLEPc, '
+    'packaged as a binary wheel"\n'
+)
+
+
+def _repository(root: Path, pyproject: str = PROJECT_METADATA) -> Path:
+    """Lay out the files :data:`assemble.SOURCE_INPUTS` names."""
+    (root / "dolfinx_solver").mkdir(parents=True, exist_ok=True)
+    (root / "dolfinx_solver" / "__init__.py").write_text("")
+    for name in ("README.md", "LICENSE", "LICENSE.GPL-3.0"):
+        (root / name).write_text("")
+    (root / "pyproject.toml").write_text(pyproject)
+    return root
+
+
 def test_the_source_copy_takes_the_package_without_its_build_products(tmp_path):
     """``dolfinx_solver/lib`` exists in a working tree that has built once."""
-    repo = tmp_path / "repo"
+    repo = _repository(tmp_path / "repo")
     (repo / "dolfinx_solver" / "lib").mkdir(parents=True)
-    (repo / "dolfinx_solver" / "__init__.py").write_text("")
     (repo / "dolfinx_solver" / "lib" / "libpetsc.so.3.25").write_text("stale")
     (repo / "dolfinx_solver" / "__pycache__").mkdir()
-    for name in ("pyproject.toml", "README.md", "LICENSE", "LICENSE.GPL-3.0"):
-        (repo / name).write_text("")
 
     copied = assemble.source_copy(tmp_path / "copy", repo_root=repo)
 
@@ -653,7 +668,7 @@ def test_a_library_no_component_accounts_for_is_refused():
 def test_an_rpath_the_repair_dropped_is_refused():
     """auditwheel rewrites rpaths, and the sibling layout is not its decision."""
     runpaths = dict(_good_wheel().runpaths)
-    runpaths["dolfinx/cpp.abi3.so"] = ("$ORIGIN/../dolfinx_solver_complex.libs",)
+    runpaths["dolfinx/cpp.abi3.so"] = (f"$ORIGIN/../{assemble.GRAFT_DIR}",)
     problem = assemble.wheel_problem(_good_wheel(runpaths=runpaths))
 
     assert problem is not None
@@ -751,3 +766,57 @@ def test_the_wheel_is_installed_on_its_own_metadata():
 
     assert "--no-deps" not in arguments
     assert arguments[-1] == "/wheelhouse/w.whl"
+
+
+def test_the_distribution_name_is_the_variant_the_drivers_build():
+    """Spec §6: the scalar type is part of the name, and one place declares
+    it. The notice file spells the same name as PyPI does (ticket 22)."""
+    assert f"dolfinx_solver_{petsc.SCALAR_TYPE}" == assemble.DISTRIBUTION
+    assert notices.DISTRIBUTION.replace("-", "_") == assemble.DISTRIBUTION
+
+
+@pytest.mark.parametrize("variant", petsc.SCALAR_TYPES)
+def test_the_copied_metadata_names_the_variant_being_built(variant):
+    """The base wheel is built from this text, so it is what decides the
+    distribution a user installs and the name the payload reads back."""
+    retargeted = assemble.retarget_project(PROJECT_METADATA, scalar_type=variant)
+
+    assert f'name = "dolfinx-solver-{variant}"' in retargeted
+    assert f"with {variant}-scalar PETSc" in retargeted
+
+
+def test_the_checked_in_metadata_is_the_default_variants_own():
+    """Which is why a copy for that variant comes out byte-identical, and why
+    `pip install -e .` in this checkout installs the name CI publishes."""
+    checked_in = (assemble.REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert (
+        assemble.retarget_project(checked_in, scalar_type=petsc.DEFAULT_SCALAR_TYPE)
+        == checked_in
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        'name = "dolfinx-solver"\n',
+        PROJECT_METADATA.replace("description", "summary"),
+        PROJECT_METADATA * 2,
+    ],
+)
+def test_metadata_the_substitution_cannot_place_fails_the_build(text):
+    """A silent miss would publish a wheel named for the other variant."""
+    with pytest.raises(ValueError, match=r"pyproject\.toml"):
+        assemble.retarget_project(text, scalar_type="real")
+
+
+def test_the_source_copy_retargets_the_metadata_it_copies(tmp_path):
+    """The one file in SOURCE_INPUTS that is not copied verbatim."""
+    repo = _repository(tmp_path / "repo")
+
+    copied = assemble.source_copy(tmp_path / "copy", repo_root=repo)
+
+    assert f'name = "dolfinx-solver-{petsc.SCALAR_TYPE}"' in (
+        copied / "pyproject.toml"
+    ).read_text(encoding="utf-8")

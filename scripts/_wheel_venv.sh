@@ -11,8 +11,14 @@
 # test that promise. CI runs these scripts on the plain runner (spec §9).
 #
 # Environment:
-#   WHEELHOUSE   directory holding the wheel (default ./.build-cache/wheelhouse,
-#                which is where scripts/build-in-container.sh leaves it)
+#   WHEELHOUSE   directory holding the wheel (default
+#                ./.build-cache-<variant>/wheelhouse, which is where
+#                scripts/build-in-container.sh leaves it)
+#   DOLFINX_SOLVER_SCALAR_TYPE  which variant is being tested: complex (the
+#                default) or real. It names the build root the defaults below
+#                point at, and the stages read it themselves — it is what
+#                decides the wheel they look for, the problem the smoke stage
+#                solves and which demos run
 #   PYTHON       interpreter the clean venv is made from (default python3);
 #                the matrix axis, since one abi3 wheel serves 3.12, 3.13, 3.14.
 #                It needs nothing installed in it — the venv it seeds gets
@@ -23,7 +29,7 @@
 #                (`pip install -e '.[dev]'`), while the matrix interpreter is
 #                whatever bare python the wheel has to install into
 #   WORK_DIR     scratch root for the venv and the stages (default
-#                ./.build-cache/wheeltest)
+#                ./.build-cache-<variant>/wheeltest)
 #   DEMO_SOURCE  a DOLFINx source tree to take the demos from; downloaded
 #                into $WORK_DIR/demo-source when unset
 #   OFFLINE      set to 1 to resolve dependencies from $WHEELHOUSE rather
@@ -33,10 +39,16 @@
 # Anything passed on a script's command line is handed to wheeltest.suite.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-wheelhouse="${WHEELHOUSE:-$repo_root/.build-cache/wheelhouse}"
-work_dir="${WORK_DIR:-$repo_root/.build-cache/wheeltest}"
 base_python="${PYTHON:-python3}"
 driver_python="${DRIVER_PYTHON:-python3}"
+
+# The variant, from the one place it is declared — the same question
+# scripts/build-in-container.sh asks, so the defaults below name the tree that
+# run left behind rather than whichever wheel happens to be lying about.
+scalar_type="$(PYTHONPATH="$repo_root" "$driver_python" -c \
+  'from wheelbuild.petsc import SCALAR_TYPE; print(SCALAR_TYPE)')"
+wheelhouse="${WHEELHOUSE:-$repo_root/.build-cache-$scalar_type/wheelhouse}"
+work_dir="${WORK_DIR:-$repo_root/.build-cache-$scalar_type/wheeltest}"
 
 # Sourcing keeps the sourcing script's positional parameters, so this is
 # whatever the caller typed after the script name.

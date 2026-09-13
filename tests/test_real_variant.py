@@ -1,9 +1,12 @@
 """The flip that makes `dolfinx-solver-real`, exercised without building it.
 
 `wheelbuild.petsc.SCALAR_TYPE` is the single place the variant is declared
-(spec §6), and everything the build decides from it has to move when it moves:
-the configure line, the cache stamp names, the checks that judge a built
-stack, and the prefix the stages install into. A full real build is hours, so
+(spec §6) — resolved once from `petsc.SCALAR_TYPE_VARIABLE`, which is what the
+workflow's matrix sets per job (ticket 21) — and everything the build decides
+from it has to move when it moves: the configure line, the cache stamp names,
+the checks that judge a built stack, the prefix the stages install into, and
+the name the finished distribution is published under. A full real build is
+hours, so
 what is asserted here is that each of those reads the value rather than
 spelling `complex` itself — which is the failure ticket 17 was raised for,
 where a real build compiled for minutes and then failed a check written for
@@ -11,6 +14,7 @@ the complex one.
 """
 
 import importlib
+import os
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -21,7 +25,7 @@ from bootstrap_shim import bootstrap_module as _bootstrap
 
 from wheelbuild import assemble, import_check, notices, petsc
 from wheelbuild import prefix as prefix_module
-from wheeltest import demos, smoke, suite
+from wheeltest import demos, environment, smoke, suite
 
 #: A complex PETSc install, as `wheelbuild.petsc.observe` would report it.
 COMPLEX_BUILD = petsc.Build(
@@ -139,28 +143,34 @@ def test_the_refusal_is_what_the_build_script_sees(tmp_path):
 
 
 #: The modules that read the variant at import time, so a flip only reaches
-#: them through a re-import. `wheeltest.suite` reads `wheeltest.smoke`, so it
-#: is reloaded after it.
-VARIANT_MODULES = (smoke, demos, suite, notices)
+#: them through a re-import, in dependency order: `wheeltest.environment`
+#: reads `wheelbuild.assemble`, and `wheeltest.suite` reads `wheeltest.smoke`.
+VARIANT_MODULES = (assemble, environment, smoke, demos, suite, notices)
 
 
 @contextmanager
 def built_for(variant: str):
-    """Re-import the variant-reading modules as if the driver declared `variant`.
+    """Re-import the variant-reading modules as a job building `variant` has them.
 
-    The flip is a one-line edit to `wheelbuild.petsc.SCALAR_TYPE` followed by
-    a build, which no test can do. What can be done is what the modules do
-    with the value, which is read once at import; so the value is replaced and
-    the modules are re-imported, then both are put back.
+    The flip is `petsc.SCALAR_TYPE_VARIABLE` in the environment followed by a
+    build, and the build is what no test can do. What can be done is the rest
+    of it: the variable is set, `wheelbuild.petsc` re-reads it, and the
+    modules that read the value once at import are re-imported on top — then
+    all of it is put back.
     """
-    original = petsc.SCALAR_TYPE
-    petsc.SCALAR_TYPE = variant
+    original = os.environ.get(petsc.SCALAR_TYPE_VARIABLE)
+    os.environ[petsc.SCALAR_TYPE_VARIABLE] = variant
     try:
+        importlib.reload(petsc)
         for module in VARIANT_MODULES:
             importlib.reload(module)
         yield
     finally:
-        petsc.SCALAR_TYPE = original
+        if original is None:
+            del os.environ[petsc.SCALAR_TYPE_VARIABLE]
+        else:
+            os.environ[petsc.SCALAR_TYPE_VARIABLE] = original
+        importlib.reload(petsc)
         for module in VARIANT_MODULES:
             importlib.reload(module)
 
@@ -220,11 +230,33 @@ def test_the_notice_text_follows_the_flip():
 
 
 def test_the_notice_names_the_distribution_the_assembler_builds():
-    """The two spellings of one name (spec §6). This fails the moment the
-    driver flips, because the distribution name is still a literal in
-    `wheelbuild.assemble` and in the packaging metadata — which is ticket 21's
-    half of the flip, and this is the reminder."""
+    """The two spellings of one name (spec §6), under either variant."""
     assert notices.DISTRIBUTION.replace("-", "_") == assemble.DISTRIBUTION
+
+    with built_for(FLIPPED):
+        assert f"dolfinx-solver-{FLIPPED}" == notices.DISTRIBUTION
+        assert f"dolfinx_solver_{FLIPPED}" == assemble.DISTRIBUTION
+
+
+def test_the_packaging_metadata_follows_the_flip():
+    """What the base wheel is built from, and therefore the name a user
+    installs — which is the name the payload reads its variant back off."""
+    checked_in = (assemble.REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    retargeted = assemble.retarget_project(checked_in, scalar_type=FLIPPED)
+
+    assert f'name = "dolfinx-solver-{FLIPPED}"' in retargeted
+    assert f"dolfinx-solver-{OTHER[FLIPPED]}" not in retargeted
+    assert f"with {FLIPPED}-scalar PETSc" in retargeted
+
+
+def test_the_wheel_the_suite_looks_for_is_the_variants_own():
+    """Both wheelhouses hold one wheel each, and a tests job is handed the
+    artefact of the job that built its variant (ticket 21)."""
+    with built_for(FLIPPED):
+        glob = environment.WHEEL_GLOB
+
+    assert glob.startswith(f"dolfinx_solver_{FLIPPED}-")
 
 
 def installed_variant_distribution() -> str:

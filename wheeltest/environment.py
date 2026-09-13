@@ -29,7 +29,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from wheelbuild import assemble
+from wheelbuild import assemble, petsc
 from wheelbuild._process import check_call
 
 if TYPE_CHECKING:
@@ -45,8 +45,10 @@ WHEEL_GLOB = f"{assemble.DISTRIBUTION}-*.whl"
 
 #: Where a warm container build leaves the wheel, relative to the repository.
 #: The host half of ``$build_root/wheelhouse``, which is what
-#: ``scripts/build-in-container.sh`` mounts the cache at.
-DEFAULT_WHEELHOUSE = Path(".build-cache") / "wheelhouse"
+#: ``scripts/build-in-container.sh`` mounts the cache at — one build root per
+#: scalar variant (spec §6), so this names the one that built the variant
+#: these stages are proving.
+DEFAULT_WHEELHOUSE = Path(f".build-cache-{petsc.SCALAR_TYPE}") / "wheelhouse"
 
 #: The process launcher the interop stage and the parallel demos run under.
 #: It comes from the PyPI ``mpich`` wheel installed beside the interpreter —

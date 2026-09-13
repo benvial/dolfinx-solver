@@ -71,7 +71,8 @@ the manylinux container build.
 
 `wheeltest/` is the suite that proves a finished wheel from outside the build:
 it installs it into a clean venv and puts five stages to it. Point it at a
-wheelhouse — `scripts/build-in-container.sh` leaves one in `.build-cache` —
+wheelhouse — `scripts/build-in-container.sh` leaves one in
+`.build-cache-<variant>` —
 and run the whole thing, or one stage at a time:
 
 ```console

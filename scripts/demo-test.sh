@@ -9,7 +9,7 @@
 # reach parts of the library a hand-written smoke test has no reason to.
 #
 # The sources are not in the wheel. Set DEMO_SOURCE to a DOLFINx source
-# tree — the container build leaves one in .build-cache — or let the run
+# tree — the container build leaves one in .build-cache-<variant> — or let the run
 # download the pinned release once into $WORK_DIR/demo-source.
 #
 # See scripts/_wheel_venv.sh for the environment variables.

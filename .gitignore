@@ -8,8 +8,9 @@ wheelhouse/
 dolfinx_solver/lib/
 dolfinx_solver/THIRD-PARTY-NOTICES
 
-# Container build cache (sources, build trees, install prefix, ccache)
-.build-cache/
+# Container build cache (sources, build trees, install prefix, ccache), one
+# per scalar variant: .build-cache-complex, .build-cache-real
+.build-cache*/
 
 # Python and tool caches
 __pycache__/

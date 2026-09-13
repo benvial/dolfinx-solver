@@ -263,3 +263,51 @@ def test_no_digest_is_spelled_in_the_shell(script):
         dolfinx_module.DOLFINX_SHA256,
     ):
         assert constant not in script
+
+
+CONTAINER_SCRIPT = REPO_ROOT / "scripts" / "build-in-container.sh"
+VENV_SCRIPT = REPO_ROOT / "scripts" / "_wheel_venv.sh"
+
+
+@pytest.fixture(scope="module")
+def container_script() -> str:
+    return CONTAINER_SCRIPT.read_text()
+
+
+@pytest.fixture(scope="module")
+def venv_script() -> str:
+    return VENV_SCRIPT.read_text()
+
+
+def test_a_local_build_caches_each_variant_in_its_own_directory(container_script):
+    """One prefix holds one scalar type and refuses the other (ticket 17), so
+    a flip on a developer's machine has to land in a second directory rather
+    than in a refusal they have to read a ticket to understand."""
+    assert 'cache_dir="${BUILD_CACHE:-$repo_root/.build-cache-$scalar_type}"' in (
+        container_script
+    )
+
+
+def test_the_local_entry_points_read_the_variant_from_the_driver(
+    container_script, venv_script
+):
+    """The same single place the build script reads it from: a literal here
+    could not follow the environment the matrix sets."""
+    for text in (container_script, venv_script):
+        assert "from wheelbuild.petsc import SCALAR_TYPE" in text
+        assert SCALAR_TYPE not in re.sub(
+            r"^#.*$", "", text, flags=re.MULTILINE
+        ).replace("SCALAR_TYPE", "")
+
+
+def test_the_container_is_told_which_variant_it_is_building(container_script):
+    """The host resolves it; the container's drivers have to see the same
+    value, or the build in it would produce the default variant."""
+    assert f'-e {petsc_module.SCALAR_TYPE_VARIABLE}="$scalar_type"' in container_script
+
+
+def test_the_suite_defaults_to_the_wheelhouse_its_variants_build_left(venv_script):
+    """Two build roots, two wheelhouses: a default naming neither would test
+    whichever wheel happened to be there."""
+    assert ".build-cache-$scalar_type/wheelhouse" in venv_script
+    assert ".build-cache-$scalar_type/wheeltest" in venv_script

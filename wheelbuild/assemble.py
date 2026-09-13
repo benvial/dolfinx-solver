@@ -44,8 +44,11 @@ interesting part — a wheel is not a copy of a build tree:
   It is a modification to an LGPL source file, and :data:`VERSION_SUBSTITUTION`
   is where it is written down.
 
-What comes out is one file: ``dolfinx_solver_complex-<version>-cp312-abi3-
-manylinux_2_34_x86_64.whl``, audited by ``auditwheel show`` and
+What comes out is one file: ``dolfinx_solver_<variant>-<version>-cp312-abi3-
+manylinux_2_34_x86_64.whl`` — the variant being the scalar type this build was
+told to produce (spec §6), which names the distribution, the packaging
+metadata copied into it and the notice file alike — audited by
+``auditwheel show`` and
 ``abi3audit --strict``, carrying a build-enforced ``THIRD-PARTY-NOTICES``
 (:mod:`wheelbuild.notices`), and proven by installing it into a clean venv
 beside the PyPI ``mpich`` wheel and importing the stack.
@@ -58,6 +61,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import zipfile
@@ -178,8 +182,55 @@ CONFIG_FILES = {
     Path("slepc4py/lib/slepc.cfg"): ("PETSC_DIR", "SLEPC_DIR"),
 }
 
-#: The wheel's own distribution name, as a file name spells it.
-DISTRIBUTION = "dolfinx_solver_complex"
+#: The wheel's own distribution name, as a file name spells it. The scalar
+#: variant is part of it (spec §6), so this follows the one place the variant
+#: is declared; :data:`wheelbuild.notices.DISTRIBUTION` is the same name as
+#: PyPI spells it, and :func:`retarget_project` is what makes the packaging
+#: metadata inside the wheel agree with both.
+DISTRIBUTION = f"dolfinx_solver_{petsc.SCALAR_TYPE}"
+
+#: The two lines of ``pyproject.toml`` that name the scalar variant, as
+#: patterns over the checked-in text. The repository declares the default
+#: variant — so a developer's ``pip install -e .`` installs the name CI
+#: publishes — and the copy the base wheel is built from is retargeted to
+#: whatever variant this build is for. Each has to match exactly once:
+#: a substitution that quietly placed nothing would publish a real-scalar
+#: wheel under the complex name, which is the one mistake the naming scheme
+#: cannot survive, because the payload reads its variant back off the
+#: distribution it was installed as (ticket 23).
+PROJECT_VARIANT_LINES = (
+    re.compile(r'^(name = "dolfinx-solver-)(\w+)(")$', re.MULTILINE),
+    re.compile(
+        r'^(description = "DOLFINx \(FEniCSx\) with )(\w+)(-scalar .*")$', re.MULTILINE
+    ),
+)
+
+
+def retarget_project(text: str, *, scalar_type: str = petsc.SCALAR_TYPE) -> str:
+    """Return ``pyproject.toml`` rewritten for one scalar variant.
+
+    Args:
+        text: The checked-in packaging metadata.
+        scalar_type: The variant this build is for.
+
+    Returns:
+        The same text with the distribution name and the description naming
+        that variant. Text already naming it comes back unchanged.
+
+    Raises:
+        ValueError: When either line is not there exactly once, which means
+            the metadata and this driver have drifted apart.
+    """
+    for pattern in PROJECT_VARIANT_LINES:
+        text, placed = pattern.subn(rf"\g<1>{scalar_type}\g<3>", text)
+        if placed != 1:
+            raise ValueError(
+                f"pyproject.toml has {placed} lines matching {pattern.pattern!r}, "
+                "and the base wheel is built from this text: the variant it "
+                f"names would not be {scalar_type}."
+            )
+    return text
+
 
 #: Tag the assembled wheel carries before ``auditwheel`` decides which
 #: manylinux it qualifies for: one interpreter tag, the stable ABI, and the
@@ -292,6 +343,13 @@ def source_copy(destination: Path, repo_root: Path = REPO_ROOT) -> Path:
             )
         else:
             shutil.copy2(source, destination / name)
+
+    # The one input that is not copied verbatim: the metadata names the
+    # variant, and the variant is what this build was told to produce.
+    project = destination / "pyproject.toml"
+    project.write_text(
+        retarget_project(project.read_text(encoding="utf-8")), encoding="utf-8"
+    )
     return destination
 
 

@@ -46,7 +46,7 @@ from wheelbuild import elf, macros
 from wheelbuild._process import check_call
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
 #: PETSc release to build. The whole stack — SLEPc, petsc4py, slepc4py, the
 #: DOLFINx build — is pinned to this one minor series per release (spec §6),
@@ -60,15 +60,64 @@ PETSC_VERSION = "3.25.5"
 #: :mod:`wheelbuild.sources` is what refuses to unpack anything else.
 PETSC_SHA256 = "6d61c472db39006d261542d1a42f1fa6c52d6e89f9e77041386189aa8c24b490"
 
-#: The scalar type this distribution is built for. ``dolfinx-solver-complex``
-#: is the first release; ``dolfinx-solver-real`` is this flipped to ``real``.
-SCALAR_TYPE = "complex"
-
 #: The two scalar variants this build has a name for. Both distributions are
 #: built from these drivers, and a spelling outside this pair is a typo that
 #: would otherwise be read as "not complex" by every check that compares
 #: against one of them (spec §6).
 SCALAR_TYPES = ("complex", "real")
+
+#: The variant the drivers build when nothing chooses one: a developer's
+#: container build, and every unit test in this repository, gets this.
+#: ``dolfinx-solver-complex`` is what oslumen's photonics workloads need, and
+#: it is the variant the checked-in packaging metadata is written for.
+DEFAULT_SCALAR_TYPE = "complex"
+
+#: Where a build that is *not* the default one says so. The wheels workflow
+#: runs a job per variant and sets this from its matrix (ticket 21), and every
+#: module that reads the scalar type reads :data:`SCALAR_TYPE` below, which is
+#: this variable resolved once — so one value reaches the configure line, the
+#: cache stamps, the prefix claim, the distribution name, the notice text and
+#: the test suite's choice of problem and demos, and no caller has to thread it.
+SCALAR_TYPE_VARIABLE = "DOLFINX_SOLVER_SCALAR_TYPE"
+
+
+def declared_scalar_type(environ: Mapping[str, str] | None = None) -> str:
+    """Return the scalar variant this process builds and judges.
+
+    Args:
+        environ: Environment to read. Defaults to the process's own.
+
+    Returns:
+        A member of :data:`SCALAR_TYPES`. An unset or empty variable — which
+        is what a workflow expression with no matrix value expands to — means
+        :data:`DEFAULT_SCALAR_TYPE`.
+
+    Raises:
+        ValueError: When the variable holds something no variant is named by.
+            Refusing is the point: a misspelling read as "not complex" would
+            configure a real PETSc for a wheel still named complex, and every
+            check comparing against one of the two names would agree with it.
+    """
+    chosen = (
+        (os.environ if environ is None else environ)
+        .get(SCALAR_TYPE_VARIABLE, "")
+        .strip()
+    )
+    if not chosen:
+        return DEFAULT_SCALAR_TYPE
+    if chosen not in SCALAR_TYPES:
+        raise ValueError(
+            f"{SCALAR_TYPE_VARIABLE}={chosen!r} names no scalar variant this "
+            f"build has: it is one of {', '.join(SCALAR_TYPES)}."
+        )
+    return chosen
+
+
+#: The scalar type this build is for, read once. ``dolfinx-solver-complex``
+#: and ``dolfinx-solver-real`` are two wheels built from these drivers by two
+#: jobs of one workflow (spec §6), and this is the single place either of them
+#: is declared.
+SCALAR_TYPE = declared_scalar_type()
 
 #: Real precision. Single-precision PETSc is a different ABI again and no
 #: variant of this wheel ships it.
