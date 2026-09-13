@@ -50,6 +50,25 @@ WHEEL_GLOB = f"{assemble.DISTRIBUTION}-*.whl"
 #: these stages are proving.
 DEFAULT_WHEELHOUSE = Path(f".build-cache-{petsc.SCALAR_TYPE}") / "wheelhouse"
 
+#: What UCX is asked to consider, and the variable that asks it.
+#:
+#: MPICH's ch4 device picks its transport through UCX at ``MPI_Init``, which
+#: for this payload is ``import dolfinx_solver``. UCX finds whatever the host
+#: exposes — and a host can expose an RDMA device it will not let a guest
+#: open. One GitHub runner in six is such a machine: its Azure MANA card
+#: answers ``Operation not supported``, and the import died there, 0.4s in,
+#: before a single message had been sent. Nothing the suite runs needs a
+#: fabric: every stage is one machine, and the parallel ones are two ranks on
+#: it. So the transports are named rather than discovered — shared memory,
+#: the intra-process one, and TCP.
+#:
+#: ``setdefault``, not an assignment: a caller who knows the machine — a
+#: cluster with InfiniBand that works, which is the case this project has
+#: never run on — keeps their own value. The same variable is the escape
+#: hatch a user has (README, *Troubleshooting*).
+UCX_TRANSPORTS_VARIABLE = "UCX_TLS"
+UCX_TRANSPORTS = "self,sm,tcp"
+
 #: The process launcher the interop stage and the parallel demos run under.
 #: It comes from the PyPI ``mpich`` wheel installed beside the interpreter —
 #: hydra, matching the ``libmpi`` mpi4py loads — and never from the machine,
@@ -174,8 +193,9 @@ def child_environment(
             stages are run as modules of.
 
     Returns:
-        The environment, with the caller's library search path gone and the
-        repository on the module path.
+        The environment, with the caller's library search path gone, the
+        repository on the module path, and UCX told which transports to use
+        unless the caller already said.
     """
     child = assemble.audit_environment(environment)
     child["PYTHONPATH"] = str(repo_root)
@@ -183,6 +203,7 @@ def child_environment(
     # away after the run; bytecode in it is at best noise in the diff of what
     # the suite left behind.
     child["PYTHONDONTWRITEBYTECODE"] = "1"
+    child.setdefault(UCX_TRANSPORTS_VARIABLE, UCX_TRANSPORTS)
     return child
 
 

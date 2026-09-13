@@ -78,6 +78,27 @@ def test_the_stages_run_without_the_callers_library_search_path():
     assert child["HOME"] == "/root"
 
 
+def test_the_stages_name_the_transports_instead_of_discovering_them():
+    """MPICH picks its transport through UCX at MPI_Init, which for this
+    payload is `import dolfinx_solver`. A host that exposes an RDMA device a
+    guest may not open killed that import on one GitHub runner in six, before
+    any message was sent; nothing the suite runs needs a fabric."""
+    child = environment.child_environment({"HOME": "/root"})
+
+    assert child[environment.UCX_TRANSPORTS_VARIABLE] == environment.UCX_TRANSPORTS
+    assert "sm" in environment.UCX_TRANSPORTS.split(",")
+
+
+def test_a_caller_who_knows_the_machine_keeps_their_own_transports():
+    """A cluster whose InfiniBand works is the case this project has never
+    run on, and naming TCP there would be slower for no reason."""
+    child = environment.child_environment(
+        {environment.UCX_TRANSPORTS_VARIABLE: "rc,ud,self"}
+    )
+
+    assert child[environment.UCX_TRANSPORTS_VARIABLE] == "rc,ud,self"
+
+
 def test_an_offline_run_resolves_the_dependencies_from_the_wheelhouse(tmp_path):
     """The wheel's metadata still decides what is installed, not the index."""
     command = environment.install_arguments(

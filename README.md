@@ -93,6 +93,37 @@ installed in it), `WHEELHOUSE` the directory holding the wheel, and
 downloading the pinned release. The suite itself runs under `DRIVER_PYTHON`,
 which is the environment the dev extras are installed in.
 
+## Troubleshooting
+
+**`import dolfinx` dies immediately, with UCX errors naming an `ib` or `mana`
+device.** Something like:
+
+```
+ib_iface.c:1316 UCX  ERROR mana_0: ... failed: Operation not supported
+```
+
+MPICH chooses its transport through UCX when MPI initialises, which for this
+wheel is the import itself. UCX looks at what the host exposes, and some hosts
+expose an RDMA device a guest is not permitted to open — Azure's MANA card is
+one, and a machine with it can kill the import before a single message has
+been sent. It is not specific to running in parallel: a single-process script
+that never calls MPI initialises it just the same.
+
+Name the transports instead of letting UCX discover them:
+
+```console
+export UCX_TLS=self,sm,tcp
+```
+
+Shared memory, the intra-process transport and TCP are everything a
+single-machine run needs, in serial or under `mpiexec -n N`. The wheel's own
+test suite sets exactly this.
+
+**On a cluster with working InfiniBand, do not set it.** There UCX finding the
+card is the point, and naming TCP would be slower for no reason. That case is
+untested: nothing in this project has ever run on a machine with a working
+fabric, so the high-speed path is expected to work rather than known to.
+
 ## Releasing
 
 A `v*` tag publishes three distributions from one workflow run: the two binary
