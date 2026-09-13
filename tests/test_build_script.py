@@ -457,3 +457,68 @@ def test_a_stage_that_does_not_name_the_tooling_says_why_not(script, heading):
     block = stage(script, heading)
 
     assert "ticket 29" in block, f"{heading} does not say why a lock bump is not its"
+
+
+#: The stages compiled against a *derived pin* — one of the three
+#: requirements deliberately outside the tooling lock (CONTEXT.md). Only the
+#: DOLFINx stage is: its C++ core includes Basix's headers and FFCx's
+#: `ufcx.h`, and its bindings are compiled by nanobind. petsc4py and slepc4py
+#: are compiled against the lock's numpy and nothing derived (ticket 31).
+STAGES_COMPILED_AGAINST_A_DERIVED_PIN = {"dolfinx"}
+
+
+def test_every_stage_compiled_against_a_derived_pin_names_it(stamps):
+    """The gap ticket 29 closed for the lock, one level out: all three pins
+    are bounds, so a release inside the bound reinstalls in the venv on every
+    run while the warm prefix keeps what the previous one compiled."""
+    bound = {stage for stage, path in stamps.items() if "$derived_id" in path}
+
+    assert bound == STAGES_COMPILED_AGAINST_A_DERIVED_PIN
+
+
+def test_the_derived_id_is_read_after_the_pins_it_names_are_installed(script):
+    """It is what pip resolved, not what the drivers declare, so it cannot be
+    read before the three `pip install` lines have run."""
+    environment = stage(script, "build environment")
+
+    assert environment.index("$mpich_requirement") < environment.index('derived_id="')
+
+
+def test_the_derived_id_is_read_from_the_driver_that_holds_the_pins(script):
+    """One place decides which releases key the stamp; the shell holds no
+    second list of them."""
+    assert "from wheelbuild.dolfinx import derived_pin_id" in script
+
+
+def test_the_derived_id_is_read_through_the_build_venvs_interpreter(script):
+    """`resolved_derived_pins` reads its own environment's metadata, and the
+    releases in question are the ones installed into the venv."""
+    environment = stage(script, "build environment")
+    line = environment[environment.index('derived_id="') :].splitlines()[0]
+
+    assert '"$venv/bin/python"' in line
+
+
+def test_the_derived_id_is_read_before_the_first_stamp_names_it(script):
+    assigned = script.index('derived_id="')
+
+    for stage_name in STAGES_COMPILED_AGAINST_A_DERIVED_PIN:
+        assert assigned < script.index(f"{stage_name}_stamp=")
+
+
+def test_the_stage_that_names_a_derived_pin_says_which_ones_and_why(script):
+    """The reasoning belongs where the stamps are named (ticket 11's ground)."""
+    block = stage(script, "DOLFINx (")
+
+    assert "ticket 31" in block
+
+
+def test_the_mpich_bound_is_recorded_as_keying_no_stage(script, stamps):
+    """The third derived pin, and the one whose absence from every stamp is a
+    decision: the stages link the MPICH built in the install prefix, and a
+    user's install resolves libmpi to the PyPI wheel (spec §5, ADR-0001)."""
+    environment = stage(script, "build environment")
+    bound = environment[environment.index("mpich bound") :]
+
+    assert "ADR-0001" in bound.split("derived_id=")[0]
+    assert not [path for path in stamps.values() if "$mpich_requirement" in path]

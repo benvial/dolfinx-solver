@@ -402,3 +402,73 @@ def test_a_core_library_without_its_relative_rpath_is_reported():
 def test_libdolfinx_is_checked_against_superlu_dist_too():
     """Every required feature has a library the linkage check can name."""
     assert set(dolfinx.REQUIRED_DEFINES.values()) <= set(dolfinx.REQUIRED_LINKAGE)
+
+
+#: A resolution of the pins this stage compiles against, as the build venv
+#: would report them: exact releases, not the bounds the drivers declare.
+RESOLVED = {
+    "nanobind": "2.12.1",
+    "fenics-basix": "0.11.0",
+    "fenics-ffcx": "0.11.0",
+    "fenics-ufl": "2025.2.0",
+}
+
+
+def test_the_derived_pins_this_stage_compiles_against_are_nanobind_and_the_trio():
+    """The mpich bound is the third derived pin and is not one of these: what
+    this stage links is the MPICH in the prefix (spec §5, ADR-0001)."""
+    assert ("nanobind", *dolfinx.UPSTREAM_TRIO) == dolfinx.COMPILED_DERIVED_PINS
+
+
+def test_the_derived_pin_id_is_a_cache_key_the_stamp_can_carry():
+    """It goes in a file name, so it is short hex like the build
+    script's `tooling_id` rather than a whole digest."""
+    identifier = dolfinx.derived_pin_id(RESOLVED)
+
+    assert len(identifier) == dolfinx.DERIVED_PIN_ID_LENGTH
+    assert set(identifier) <= set("0123456789abcdef")
+
+
+def test_the_same_resolution_is_the_same_identifier():
+    """A stamp that moved without an input moving would rebuild every run."""
+    assert dolfinx.derived_pin_id(RESOLVED) == dolfinx.derived_pin_id(dict(RESOLVED))
+
+
+def test_a_patch_release_inside_the_declared_bound_moves_the_identifier():
+    """`nanobind==2.12.*` resolves to 2.12.1 today and 2.12.2 tomorrow, and
+    the bindings are compiled by whichever it is (ticket 31)."""
+    bumped = RESOLVED | {"nanobind": "2.12.2"}
+
+    assert dolfinx.derived_pin_id(bumped) != dolfinx.derived_pin_id(RESOLVED)
+
+
+def test_a_fresh_basix_inside_the_declared_bound_moves_the_identifier():
+    """The C++ core compiles against Basix's headers, so a warm prefix holds
+    one built against the previous release until the stamp notices."""
+    bumped = RESOLVED | {"fenics-basix": "0.11.1"}
+
+    assert dolfinx.derived_pin_id(bumped) != dolfinx.derived_pin_id(RESOLVED)
+
+
+def test_the_identifier_does_not_depend_on_the_order_they_were_read_in():
+    """The key is about which releases are installed; a stamp that moved
+    because a caller iterated differently would recompile for nothing."""
+    reversed_order = dict(reversed(list(RESOLVED.items())))
+
+    assert dolfinx.derived_pin_id(reversed_order) == dolfinx.derived_pin_id(RESOLVED)
+
+
+def test_the_resolved_pins_are_read_out_of_the_environment_they_installed_into():
+    """The build script runs this through the build venv's interpreter, which
+    is where the three `pip install` lines put them."""
+    resolved = dolfinx.resolved_derived_pins(("pytest",))
+
+    assert set(resolved) == {"pytest"}
+    assert resolved["pytest"]
+
+
+def test_a_pin_that_is_not_installed_is_refused_rather_than_hashed():
+    """Hashing an absent release would key the stamp on a lie: the stage
+    would build against whatever pip resolved and claim it did not."""
+    with pytest.raises(LookupError, match="not-installed-here"):
+        dolfinx.resolved_derived_pins(("not-installed-here",))

@@ -191,6 +191,29 @@ mpich_requirement="mpich$("$venv/bin/python" -c 'from wheelbuild.mpich import MP
 from wheelbuild.pin_check import expected_specifier
 print(expected_specifier(MPICH_VERSION))')"
 "$venv/bin/pip" install --quiet "$mpich_requirement"
+# What the derived pins resolved to, for the one stage that is compiled
+# against them. Ticket 29 put the lock's digest into the stamps of the two
+# stages the venv compiles, and the lock deliberately names none of these
+# three. All three are bounds rather than exact versions, and two of them are
+# inputs to what the DOLFINx stage produces: a fresh fenics-basix inside the
+# pin our pyproject.toml declares, or a nanobind patch inside ==2.12.*,
+# reinstalls here on every run, and without this the stage would be re-checked
+# against a stamp whose name did not move — a warm prefix holding a core
+# compiled against the previous Basix headers while the "==> build tooling"
+# block in the same log names the new ones (ticket 31).
+#
+# The third derived pin, the mpich bound, keys no stage and is not in the
+# identifier: every stage links the MPICH built in the install prefix, and a
+# user's install resolves libmpi.so.12 to the PyPI wheel rather than to
+# anything this venv holds (spec §5, ADR-0001). The venv's copy is an input to
+# the import checks, not to a compile.
+#
+# Read through the venv's own interpreter, since the releases in question are
+# the ones the three pip lines above just installed into it, and read after
+# all three for the same reason. The driver holds which distributions count,
+# so the shell keeps no second list of them.
+derived_id="$("$venv/bin/python" -c 'from wheelbuild.dolfinx import derived_pin_id
+print(derived_pin_id())')"
 # Which tooling built this wheel, in the log beside it. The hashed file makes
 # the answer the same for both variants of a release; this is what lets a
 # reader confirm that from the two logs rather than assume it, and it is also
@@ -487,8 +510,14 @@ python -m wheelbuild.pin_check \
 # compiled against its mpi4py's include, so a lock bump has to rebuild it
 # rather than re-check it (ticket 29). The C++ core is rebuilt with it,
 # which is what a warm ccache is for.
+# Stamped on the derived pins as well, which the lock does not cover: the pin
+# names above are the bounds the drivers declare, and $derived_id is what pip
+# resolved them to — the 2.12.1 behind nanobind==2.12.*, and the trio releases
+# whose headers this stage compiles against. Both are in the name because they
+# answer different questions: a bound that moves is a decision in this
+# repository, a resolution that moves is upstream publishing (ticket 31).
 nanobind_version="$(driver 'from wheelbuild.dolfinx import NANOBIND_VERSION; print(NANOBIND_VERSION)')"
-dolfinx_stamp="$install_prefix/.dolfinx-$dolfinx_version-petsc-$petsc_version-$scalar_type-slepc-$slepc_version-adios2-$adios2_version-kahip-$kahip_version-nanobind-$nanobind_version-tooling-$tooling_id.installed"
+dolfinx_stamp="$install_prefix/.dolfinx-$dolfinx_version-petsc-$petsc_version-$scalar_type-slepc-$slepc_version-adios2-$adios2_version-kahip-$kahip_version-nanobind-$nanobind_version-tooling-$tooling_id-derived-$derived_id.installed"
 if [[ -f "$dolfinx_stamp" ]]; then
   echo "    cached in $install_prefix; re-checking the build and importing it"
   python -m wheelbuild.dolfinx --validate-only --prefix "$install_prefix"

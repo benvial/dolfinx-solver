@@ -43,6 +43,8 @@ Two things about the staged package are decisions rather than mechanics:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.metadata
 import os
 import re
 import shutil
@@ -253,6 +255,93 @@ def upstream_trio_requirements(pyproject_text: str | None = None) -> list[str]:
         # printed as written could carry spaces around its specifiers.
         requirements.append(str(Requirement(requirement)))
     return requirements
+
+
+#: The *derived pins* (CONTEXT.md) this stage is compiled against: nanobind,
+#: which builds the bindings, and the trio whose headers the C++ core
+#: includes. :func:`derived_pin_id` is why the list exists.
+#:
+#: The third derived pin, the ``mpich`` bound, is deliberately not here: what
+#: this stage links is the MPICH built in the install prefix, and the PyPI
+#: wheel's ``libmpi`` is resolved on the user's machine (spec §5, ADR-0001),
+#: so the venv's copy is not an input to what this stage produces.
+COMPILED_DERIVED_PINS = ("nanobind", *UPSTREAM_TRIO)
+
+#: How many hex characters of the digest :func:`derived_pin_id` returns. The
+#: same length as the build script's ``tooling_id``, and for the same reason:
+#: this is a cache key, not a security claim, and it only has to differ when
+#: the resolved releases do.
+DERIVED_PIN_ID_LENGTH = 12
+
+
+def resolved_derived_pins(
+    distributions: Sequence[str] = COMPILED_DERIVED_PINS,
+) -> dict[str, str]:
+    """Return the releases the build venv actually holds for the derived pins.
+
+    The drivers declare bounds — ``nanobind==2.12.*``, and whatever the trio
+    pins in our ``pyproject.toml`` are — and ``pip`` resolves each of them
+    afresh on every run. This is the other end of that: what it resolved to,
+    read out of the interpreter this runs under, which the build script makes
+    the build venv's.
+
+    Args:
+        distributions: The installed distributions to look up.
+
+    Returns:
+        Each distribution's release, keyed by the name it was asked for.
+
+    Raises:
+        LookupError: When one of them is not installed. A stamp keyed on an
+            absent release would say the stage was built against something no
+            run could have compiled it against, which is worse than no key at
+            all.
+    """
+    resolved = {}
+    for name in distributions:
+        try:
+            resolved[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError as missing:
+            raise LookupError(
+                f"{name} is not installed in {sys.executable}'s environment. "
+                "The DOLFINx stage compiles against the derived pins the "
+                "build venv holds, so the release each resolved to has to be "
+                "readable before the stage's stamp can name it (ticket 31)."
+            ) from missing
+    return resolved
+
+
+def derived_pin_id(resolved: dict[str, str] | None = None) -> str:
+    """Return a cache key for the derived pins this stage compiles against.
+
+    Ticket 29 put the build tooling lock's digest into the stamps of the two
+    stages compiled against the venv, so a lock bump rebuilds them rather than
+    re-checking them. The three derived pins are deliberately outside that
+    lock, and two of them are inputs to what this stage produces: a fresh
+    ``fenics-basix`` inside the declared bound, or a nanobind patch inside
+    ``==2.12.*``, reinstalls in the venv on every run while the warm prefix
+    keeps a core compiled against the previous headers. This is what lets the
+    stamp notice (ticket 31).
+
+    Args:
+        resolved: The releases to key on. Read from the environment when not
+            given.
+
+    Returns:
+        The digest, as lowercase hex.
+
+    Raises:
+        LookupError: When the releases have to be read and one of the
+            distributions is not installed.
+    """
+    if resolved is None:
+        resolved = resolved_derived_pins()
+    # Sorted rather than in the order they were read: the identifier is about
+    # which releases are installed, and a stamp that moved because a caller
+    # iterated differently would recompile for nothing.
+    recorded = "\n".join(f"{name}=={resolved[name]}" for name in sorted(resolved))
+    digest = hashlib.sha256(recorded.encode("utf-8")).hexdigest()
+    return digest[:DERIVED_PIN_ID_LENGTH]
 
 
 #: nanobind's ABI tag as it appears in a compiled extension: a domain string
