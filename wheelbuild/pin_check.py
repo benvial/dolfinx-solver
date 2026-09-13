@@ -35,23 +35,28 @@ upstream can answer. Copying a pin is how the answer gets here, and a copy has
 no way of noticing that the original changed — an upstream ``.post`` release
 that widens or moves a bound leaves our metadata admitting a trio DOLFINx does
 not support, and the failure lands in a user's resolver rather than here.
-:func:`trio_problem` is the comparison; it reads upstream's file at the mirrored
-tag, which is the same immutable text the build compiles against.
+:func:`trio_problem` is the comparison; it reads upstream's file out of the
+source tarball of the mirrored release, verified against the digest
+:mod:`wheelbuild.dolfinx` records for it (spec §10), which is the same text
+the container build compiles DOLFINx from.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import tarfile
 import tomllib
-import urllib.request
+from contextlib import ExitStack
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
 
+from wheelbuild import sources
 from wheelbuild.mpich import MPICH_VERSION, series
 from wheelbuild.version import DOLFINX_VERSION
 
@@ -74,79 +79,77 @@ UPSTREAM_TRIO = ("fenics-basix", "fenics-ffcx", "fenics-ufl")
 UPSTREAM_PYPROJECT = "python/pyproject.toml"
 
 
-def upstream_pyproject_url(dolfinx_version: str = DOLFINX_VERSION) -> str:
-    """Return the URL of upstream's ``pyproject.toml`` at a release tag.
-
-    The tag, not a branch: a branch's file changes under the check, while a
-    tag names the same text the build's source tarball unpacks.
+def upstream_pyproject_member(dolfinx_version: str = DOLFINX_VERSION) -> str:
+    """Return the path of upstream's ``pyproject.toml`` inside its tarball.
 
     Args:
         dolfinx_version: The DOLFINx release this wheel mirrors.
 
     Returns:
-        A raw-content URL on ``https``.
+        The archive member's name, as upstream's GitHub tarball spells it.
     """
-    return (
-        "https://raw.githubusercontent.com/FEniCS/dolfinx/"
-        f"v{dolfinx_version}/{UPSTREAM_PYPROJECT}"
-    )
+    return f"dolfinx-{dolfinx_version}/{UPSTREAM_PYPROJECT}"
 
 
-#: How long to wait for upstream's file. The check is meant to fail a run in
-#: seconds; a hung connection would otherwise sit in the job until the job's
-#: own timeout, which reports nothing about the pins.
-FETCH_TIMEOUT_SECONDS = 30
+def fetch_upstream_pyproject(cache: Path | None = None) -> tuple[str, str]:
+    """Read upstream's ``pyproject.toml`` out of the release it ships in.
 
-
-class _HttpsOnlyRedirects(urllib.request.HTTPRedirectHandler):
-    """Refuse a redirect that leaves ``https``.
-
-    Checking the scheme of the URL that was asked for says nothing about the
-    one that answers: a redirect to ``http`` would be followed silently, and
-    the pins are a supply-chain fact about what the wheel depends on rather
-    than a convenience.
-    """
-
-    def redirect_request(  # noqa: PLR0917 - the signature is urllib's
-        self,
-        req: urllib.request.Request,
-        fp: object,
-        code: int,
-        msg: str,
-        headers: object,
-        newurl: str,
-    ) -> urllib.request.Request | None:
-        """Let urllib follow a redirect only while it stays on https."""
-        if not newurl.startswith("https://"):
-            raise ValueError(f"refusing to follow a redirect to {newurl!r}")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)  # type: ignore[arg-type]
-
-
-def fetch_upstream_pyproject(url: str | None = None) -> str:
-    """Download upstream's ``pyproject.toml``.
+    Not off ``raw.githubusercontent.com``, which is where this used to read it
+    from. That file decides whether a check passes, and nothing verified it:
+    the tag made the content immutable in practice and that was the whole of
+    the argument. The source tarball of the same release is pinned by content
+    (:data:`wheelbuild.dolfinx.DOLFINX_SHA256`, ticket 10), it is under a
+    megabyte, and it is the same archive the container build compiles DOLFINx
+    from — so the trio pins are now compared against bytes this repository has
+    checked, and the comparison still costs seconds rather than the hours the
+    build takes.
 
     Args:
-        url: Where to read it from. Defaults to
-            :func:`upstream_pyproject_url` at the mirrored release.
+        cache: Directory to download into. A temporary one by default, since
+            CI has no reason to keep it between runs.
 
     Returns:
-        The file's contents.
+        The file's contents and a description of where they were read from.
 
     Raises:
-        ValueError: When the URL is not ``https``, or redirects off it.
-        OSError: When the file cannot be read. Raised rather than swallowed:
-            a pin check that passes because it could not reach the thing it
-            compares against is worse than one that was never written.
+        ValueError: When the archive is not the pinned one.
+        OSError: When it cannot be fetched or does not carry the file.
+            Raised rather than swallowed: a pin check that passes because it
+            could not reach the thing it compares against is worse than one
+            that was never written.
     """
-    url = upstream_pyproject_url() if url is None else url
-    if not url.startswith("https://"):
-        raise ValueError(f"refusing to read the upstream pins over {url!r}")
-    request = urllib.request.Request(  # noqa: S310 - https, checked above
-        url, headers={"User-Agent": "dolfinx-solver-pin-check"}
-    )
-    opener = urllib.request.build_opener(_HttpsOnlyRedirects)
-    with opener.open(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
-        return str(response.read().decode("utf-8"))
+    # Imported here rather than at module scope: wheelbuild.dolfinx reads
+    # UPSTREAM_TRIO from this module, so the two cannot import each other at
+    # import time.
+    from wheelbuild import dolfinx  # noqa: PLC0415
+
+    with ExitStack() as scope:
+        if cache is None:
+            cache = Path(scope.enter_context(TemporaryDirectory()))
+        url = dolfinx.source_url()
+        try:
+            archive = sources.fetch(
+                url,
+                cache / f"{dolfinx.source_dir_name()}.tar.gz",
+                dolfinx.DOLFINX_SHA256,
+            )
+        except OSError as unreachable:
+            # urllib's own errors name the host at best, and a check that
+            # could not run has to say what it could not reach.
+            raise OSError(f"{url} could not be fetched: {unreachable}") from unreachable
+        member = upstream_pyproject_member()
+        with tarfile.open(archive) as tar:
+            try:
+                extracted = tar.extractfile(member)
+            except KeyError as missing:
+                raise OSError(
+                    f"{url} carries no {member}, so upstream's own trio pins "
+                    "could not be read out of the release this wheel mirrors."
+                ) from missing
+            if extracted is None:
+                raise OSError(f"{member} in {url} is not a regular file.")
+            return extracted.read().decode("utf-8"), f"{url}::{member}"
+    raise AssertionError  # pragma: no cover - ExitStack always yields
 
 
 def declared_dependencies(pyproject_text: str) -> dict[str, str]:
@@ -361,12 +364,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Command-line entry point for the pin check.
 
     The mpich half needs nothing but this repository and so always runs. The
-    trio half needs upstream's file, which is either downloaded
-    (``--fetch-upstream``, what CI's checks job does) or read from a source
+    trio half needs upstream's file, which is either read out of the pinned
+    source tarball, downloaded and verified against its recorded digest
+    (``--fetch-upstream``, what CI's checks job does), or read from a source
     tree already on disk (``--upstream-pyproject``, for the build container,
-    which has the release unpacked). With neither, it is skipped and says so:
-    a check that quietly passed when it could not run would be worse than
-    one that was never written.
+    which has that same verified release unpacked). With neither, it is
+    skipped and says so: a check that quietly passed when it could not run
+    would be worse than one that was never written.
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pyproject", type=Path, default=PYPROJECT_PATH)
@@ -378,7 +382,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--fetch-upstream",
         action="store_true",
-        help="download upstream's python/pyproject.toml at the mirrored tag",
+        help="read upstream's python/pyproject.toml out of the pinned tarball",
     )
     args = parser.parse_args(argv)
 
@@ -400,15 +404,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         upstream_text = args.upstream_pyproject.read_text(encoding="utf-8")
         source = str(args.upstream_pyproject)
     elif args.fetch_upstream:
-        source = upstream_pyproject_url()
         try:
-            upstream_text = fetch_upstream_pyproject(source)
+            upstream_text, source = fetch_upstream_pyproject()
         except (OSError, ValueError) as unreachable:
             # Not a pass: the whole point of this half is that our pins are
             # only correct relative to a file we do not control, and not
-            # having read it is not evidence about them.
+            # having read it is not evidence about them. A digest mismatch
+            # lands here too, and is the louder of the two.
             print(
-                f"ERROR: could not read the upstream pins from {source}: {unreachable}",
+                f"ERROR: could not read the upstream pins: {unreachable}",
                 file=sys.stderr,
             )
             return 1

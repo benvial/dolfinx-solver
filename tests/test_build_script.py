@@ -12,6 +12,9 @@ from pathlib import Path
 
 import pytest
 
+from wheelbuild import dolfinx as dolfinx_module
+from wheelbuild import mpich as mpich_module
+from wheelbuild import petsc as petsc_module
 from wheelbuild.mpich import MPICH_VERSION
 from wheelbuild.petsc import SCALAR_TYPE
 
@@ -173,3 +176,90 @@ def test_the_mpich_version_the_stamp_names_is_the_driver_s(script):
     """The shell reads it; nothing in the script holds a second copy."""
     assert MPICH_VERSION not in script
     assert "from wheelbuild.mpich import MPICH_VERSION" in script
+
+
+#: `fetch_source <url> <dir> <digest>` calls, as they appear in the script.
+FETCH = re.compile(
+    r'^fetch_source "\$(?P<url>\w+)" "\$\w+" "\$(?P<digest>\w+)"$', re.MULTILINE
+)
+
+
+def test_every_source_archive_is_fetched_with_a_digest_to_check_it_against(script):
+    """Six archives become vendored binaries; HTTPS pins none of them.
+
+    A tarball re-rolled upstream under the same name satisfies the version
+    pin and changes what is inside the published wheel, so every fetch names
+    a SHA-256 as well as a URL (ticket 10, spec §10).
+    """
+    fetched = {match["url"].removesuffix("_url") for match in FETCH.finditer(script)}
+
+    assert fetched == {
+        "mpich",
+        "petsc",
+        "slepc",
+        "adios2",
+        "kahip",
+        "dolfinx",
+    }
+    # Every call matched: one that passed two arguments would be a stage
+    # extracting an archive nothing had checked.
+    assert script.count('fetch_source "') == len(fetched)
+
+
+def test_every_digest_is_read_from_the_driver_that_names_the_url(script):
+    """One place to move when a version moves, and it is not the shell."""
+    for match in FETCH.finditer(script):
+        stage_name = match["url"].removesuffix("_url")
+        constant = f"{stage_name.upper()}_SHA256"
+        assert match["digest"] == f"{stage_name}_sha256"
+        assert f"import {constant}; print({constant})" in script
+
+
+def test_nothing_is_unpacked_before_its_digest_has_been_checked(script):
+    """`tar` runs after the check, on the run that extracts, every time."""
+    definition = script[script.index("fetch_source() {") :]
+    definition = definition[: definition.index("\n}\n")]
+
+    assert definition.index("curl -fsSL") < definition.index("wheelbuild.sources")
+    assert definition.index("wheelbuild.sources") < definition.index("tar -xzf")
+
+
+def test_a_refused_archive_stops_the_build_without_relying_on_set_e(script):
+    """`set -e` is switched off for a function body called in a condition.
+
+    Nothing calls `fetch_source` that way today, and a check that unpacks the
+    archive anyway if someone ever does is not a check.
+    """
+    definition = script[script.index("fetch_source() {") :]
+    definition = definition[: definition.index("\n}\n")]
+
+    assert "exit 1" in definition
+    assert definition.index("exit 1") < definition.index("tar -xzf")
+
+
+def test_the_extraction_marker_records_the_digest_it_was_extracted_from(script):
+    """A digest that moves without the version has to re-extract, not reuse."""
+    definition = script[script.index("fetch_source() {") :]
+    definition = definition[: definition.index("\n}\n")]
+
+    assert '"$(cat "$marker")" != "$expected"' in definition
+    assert 'printf \'%s\\n\' "$expected" >"$marker"' in definition
+
+
+def test_the_trio_pins_are_checked_against_the_verified_source_tree(script):
+    """Upstream's own file, out of bytes this build pinned (ticket 10)."""
+    dolfinx = stage(script, "DOLFINx (")
+    check = dolfinx.index("wheelbuild.pin_check")
+
+    assert dolfinx.index("fetch_source") < check
+    assert '--upstream-pyproject "$dolfinx_source/python/pyproject.toml"' in dolfinx
+
+
+def test_no_digest_is_spelled_in_the_shell(script):
+    """The same rule the versions follow: the drivers hold the constants."""
+    for constant in (
+        mpich_module.MPICH_SHA256,
+        petsc_module.PETSC_SHA256,
+        dolfinx_module.DOLFINX_SHA256,
+    ):
+        assert constant not in script

@@ -54,6 +54,12 @@ if TYPE_CHECKING:
 #: PETSc's. Moving this means moving :mod:`wheelbuild.slepc` with it.
 PETSC_VERSION = "3.25.5"
 
+#: SHA-256 of the source archive :func:`source_url` serves, so the bytes that become
+#: vendored binaries are pinned by content and not only by version
+#: (spec §10). Moving the release above means moving this with it;
+#: :mod:`wheelbuild.sources` is what refuses to unpack anything else.
+PETSC_SHA256 = "6d61c472db39006d261542d1a42f1fa6c52d6e89f9e77041386189aa8c24b490"
+
 #: The scalar type this distribution is built for. ``dolfinx-solver-complex``
 #: is the first release; ``dolfinx-solver-real`` is this flipped to ``real``.
 SCALAR_TYPE = "complex"
@@ -94,6 +100,27 @@ DOWNLOADED_PACKAGES = (
     "superlu_dist",
     "hdf5",
 )
+
+# These seven are deliberately *not* pinned by digest the way the six archives
+# this repository fetches itself are (ticket 10, spec §10). PETSc's configure
+# downloads them under its own rules, and at PETSC_VERSION those rules pin a
+# git tag rather than a content hash — ``v0.3.32`` for OpenBLAS, ``v2.2.3``
+# for ScaLAPACK, ``v5.1.0-p12`` for PETSc's own METIS fork, ``v7.0.11`` for
+# PT-SCOTCH, ``5.8.2`` for MUMPS, ``v9.2.1`` for SuperLU_DIST, ``hdf5_1.14.6``
+# for HDF5 — and ``config/BuildSystem/config/package.py`` uses SHA-256 only to
+# decide whether a sub-build is stale, never to check a downloaded tarball
+# against a recorded digest.
+#
+# Taking them over would mean fetching each one here and passing
+# ``--download-<pkg>=<local tarball>``: seven more version/digest pairs to
+# move on every PETSc bump, against a set of releases that is PETSc's to
+# choose and that PETSc tested together — and one of them, ``metis``, is not
+# an upstream release at all but a PETSc fork whose tag only PETSc publishes.
+# The pin that matters is the one above it: the PETSc tarball those rules
+# arrive in is itself verified against PETSC_SHA256 before anything unpacks
+# it, so the set of URLs and tags used is fixed by bytes we have checked. What
+# is left unpinned is what those URLs serve, and that is recorded here as a
+# decision rather than an oversight.
 
 #: What a finished prefix install has to contain. ``petscvariables`` is how
 #: PETSc's own check target and DOLFINx's build find the configuration, so a

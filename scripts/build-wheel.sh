@@ -37,16 +37,32 @@ export PYTHONPATH="$repo_root"
 
 mkdir -p "$build_root" "$CCACHE_DIR"
 
-# Download and unpack a source tarball into $build_root, once. The marker is
-# written only after tar returns, so an interrupted extraction is redone
-# rather than compiled against half a source tree.
+# Download, verify and unpack a source tarball into $build_root, once.
+#
+# The digest is the third argument, read from the same driver the URL came
+# from, and nothing is extracted before the bytes on disk have been shown to
+# hash to it (spec §10): HTTPS says who served the tarball, not that the
+# tarball is still the one this build was pinned against. The check runs on
+# the run that extracts, not only on the run that downloads, so a warm cache
+# cannot carry an unverified archive into `tar`.
+#
+# The marker holds the digest rather than being empty, and is written only
+# after tar returns. That makes it say two things instead of one: an
+# interrupted extraction is redone rather than compiled against half a source
+# tree, and a digest that moves without the version moving — an upstream
+# tarball re-rolled under the same name — re-extracts instead of silently
+# reusing the tree the old bytes left behind.
 fetch_source() {
-  local url="$1" source_dir="$2" archive="$build_root/${2##*/}.tar.gz"
-  if [[ ! -f "$source_dir/.extracted" ]]; then
+  local url="$1" source_dir="$2" expected="$3" archive="$build_root/${2##*/}.tar.gz"
+  local marker="$source_dir/.extracted"
+  if [[ ! -f "$marker" || "$(cat "$marker")" != "$expected" ]]; then
     rm -rf "${source_dir:?}"
     curl -fsSL "$url" -o "$archive"
+    python -m wheelbuild.sources \
+      --archive "$archive" --expected "$expected" --url "$url" ||
+      { echo "refusing to unpack $archive" >&2; exit 1; }
     tar -xzf "$archive" -C "$build_root"
-    touch "$source_dir/.extracted"
+    printf '%s\n' "$expected" >"$marker"
   fi
 }
 
@@ -140,9 +156,10 @@ python -m wheelbuild.prefix --prefix "$install_prefix" \
 echo "==> MPICH (binding shims only; the PyPI wheel supplies libmpi)"
 mpich_version="$(driver 'from wheelbuild.mpich import MPICH_VERSION; print(MPICH_VERSION)')"
 mpich_url="$(driver 'from wheelbuild.mpich import source_url; print(source_url())')"
+mpich_sha256="$(driver 'from wheelbuild.mpich import MPICH_SHA256; print(MPICH_SHA256)')"
 [[ -n "$mpich_version" ]] || { echo "could not read MPICH_VERSION" >&2; exit 1; }
 mpich_source="$build_root/mpich-$mpich_version"
-fetch_source "$mpich_url" "$mpich_source"
+fetch_source "$mpich_url" "$mpich_source" "$mpich_sha256"
 # A stamp, not one of the installed shims, is what says the stage is done —
 # the same marker the stages below use. An installed library appears partway
 # through make install, so an install interrupted between libmpifort and
@@ -177,9 +194,10 @@ echo "==> PETSc ($scalar_type scalars, plus its whole --download-* dependency st
 # $petsc_source is the build tree the cache is really keeping.
 petsc_version="$(driver 'from wheelbuild.petsc import PETSC_VERSION; print(PETSC_VERSION)')"
 petsc_url="$(driver 'from wheelbuild.petsc import source_url; print(source_url())')"
+petsc_sha256="$(driver 'from wheelbuild.petsc import PETSC_SHA256; print(PETSC_SHA256)')"
 [[ -n "$petsc_version" ]] || { echo "could not read PETSC_VERSION" >&2; exit 1; }
 petsc_source="$build_root/petsc-$petsc_version"
-fetch_source "$petsc_url" "$petsc_source"
+fetch_source "$petsc_url" "$petsc_source" "$petsc_sha256"
 # The stamp, not a library file, is what says the stage is done: it is written
 # after the driver has installed *and* validated, so an interrupted make
 # install leaves no stamp and is rebuilt rather than re-checked forever. Its
@@ -219,9 +237,10 @@ fi
 echo "==> SLEPc (against the PETSc just built)"
 slepc_version="$(driver 'from wheelbuild.slepc import SLEPC_VERSION; print(SLEPC_VERSION)')"
 slepc_url="$(driver 'from wheelbuild.slepc import source_url; print(source_url())')"
+slepc_sha256="$(driver 'from wheelbuild.slepc import SLEPC_SHA256; print(SLEPC_SHA256)')"
 [[ -n "$slepc_version" ]] || { echo "could not read SLEPC_VERSION" >&2; exit 1; }
 slepc_source="$build_root/slepc-$slepc_version"
-fetch_source "$slepc_url" "$slepc_source"
+fetch_source "$slepc_url" "$slepc_source" "$slepc_sha256"
 # Stamped on the PETSc release too: a PETSc bump has to rebuild the SLEPc that
 # was linked against the old one, and the stamp is what makes that automatic.
 # On its scalar type as well, since that is baked into the binary and a flip
@@ -267,10 +286,11 @@ fi
 echo "==> ADIOS2 (parallel I/O, against the prefix's parallel HDF5)"
 adios2_version="$(driver 'from wheelbuild.adios2 import ADIOS2_VERSION; print(ADIOS2_VERSION)')"
 adios2_url="$(driver 'from wheelbuild.adios2 import source_url; print(source_url())')"
+adios2_sha256="$(driver 'from wheelbuild.adios2 import ADIOS2_SHA256; print(ADIOS2_SHA256)')"
 adios2_dir="$(driver 'from wheelbuild.adios2 import source_dir_name; print(source_dir_name())')"
 [[ -n "$adios2_version" ]] || { echo "could not read ADIOS2_VERSION" >&2; exit 1; }
 adios2_source="$build_root/$adios2_dir"
-fetch_source "$adios2_url" "$adios2_source"
+fetch_source "$adios2_url" "$adios2_source" "$adios2_sha256"
 # Stamped on two releases it does not build: the PETSc whose configure put the
 # parallel HDF5 in this prefix, which wheelbuild/adios2.py configures against
 # with HDF5_ROOT and HDF5_PREFER_PARALLEL, and the MPICH whose mpicc/mpicxx
@@ -299,10 +319,11 @@ fi
 echo "==> KaHIP (the optional second partitioner beside PT-SCOTCH)"
 kahip_version="$(driver 'from wheelbuild.kahip import KAHIP_VERSION; print(KAHIP_VERSION)')"
 kahip_url="$(driver 'from wheelbuild.kahip import source_url; print(source_url())')"
+kahip_sha256="$(driver 'from wheelbuild.kahip import KAHIP_SHA256; print(KAHIP_SHA256)')"
 kahip_dir="$(driver 'from wheelbuild.kahip import source_dir_name; print(source_dir_name())')"
 [[ -n "$kahip_version" ]] || { echo "could not read KAHIP_VERSION" >&2; exit 1; }
 kahip_source="$build_root/$kahip_dir"
-fetch_source "$kahip_url" "$kahip_source"
+fetch_source "$kahip_url" "$kahip_source" "$kahip_sha256"
 # Stamped on the MPICH release as well: ParHIP is compiled with this prefix's
 # mpicc/mpicxx, against that MPICH's headers and that libmpi's exported
 # symbols, which is the one input from the prefix KaHIP has. The soname in
@@ -330,10 +351,20 @@ echo "==> DOLFINx (C++ core, then the cp312-abi3 nanobind bindings)"
 # and slepc4py, which is the layout the wheel assembly grafts.
 dolfinx_version="$(driver 'from wheelbuild.dolfinx import DOLFINX_VERSION; print(DOLFINX_VERSION)')"
 dolfinx_url="$(driver 'from wheelbuild.dolfinx import source_url; print(source_url())')"
+dolfinx_sha256="$(driver 'from wheelbuild.dolfinx import DOLFINX_SHA256; print(DOLFINX_SHA256)')"
 dolfinx_dir="$(driver 'from wheelbuild.dolfinx import source_dir_name; print(source_dir_name())')"
 [[ -n "$dolfinx_version" ]] || { echo "could not read DOLFINX_VERSION" >&2; exit 1; }
 dolfinx_source="$build_root/$dolfinx_dir"
-fetch_source "$dolfinx_url" "$dolfinx_source"
+fetch_source "$dolfinx_url" "$dolfinx_source" "$dolfinx_sha256"
+# The trio pins, against the copy that was just verified. The check has run
+# twice by now — the mpich half in the "pin check" stage above, and both
+# halves in the checks job minutes after the push — and this is the run that
+# reads upstream's python/pyproject.toml out of bytes pinned by digest rather
+# than off the network. It is also the file DOLFINx's C++ core is about to be
+# compiled from, which is as close as the comparison can get to the thing it
+# is about (spec §10).
+python -m wheelbuild.pin_check \
+  --upstream-pyproject "$dolfinx_source/python/pyproject.toml"
 # Stamped on every release DOLFINx is linked against, not only its own, and on
 # the scalar type of the PETSc among them:
 # PetscScalar is baked into libdolfinx and into the bindings, and KaHIP's two

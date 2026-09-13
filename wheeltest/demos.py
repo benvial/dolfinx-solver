@@ -33,7 +33,8 @@ they print a line about pyvista and carry on.
 The sources come from the DOLFINx release this wheel mirrors, which is not
 in the wheel: either from a source tree the caller already has (the
 container build leaves one in its cache) or from the pinned tarball
-:mod:`wheelbuild.dolfinx` names, fetched once into a cache directory.
+:mod:`wheelbuild.dolfinx` names, fetched once into a cache directory and
+checked against the digest that driver records for it (spec §10).
 """
 
 from __future__ import annotations
@@ -45,12 +46,11 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 from wheelbuild import dolfinx as dolfinx_driver
-from wheelbuild import petsc
+from wheelbuild import petsc, sources
 from wheeltest import environment
 
 if TYPE_CHECKING:
@@ -184,15 +184,14 @@ def subset(variant: str = petsc.SCALAR_TYPE) -> tuple[Demo, ...]:
 #: The subset this build's variant runs.
 DEMOS = subset()
 
-#: What the download identifies itself as. GitHub's archive endpoint
-#: answers ``Python-urllib/3.x`` with a 500 rather than a tarball, so the
-#: header is set rather than left to the default — a fetch that fails with
-#: "Internal Server Error" against a URL that works in a browser is a long
-#: afternoon otherwise.
-USER_AGENT = "dolfinx-solver wheeltest"
-
 #: What upstream calls the directory the demos live in, inside its tarball.
 DEMO_RELATIVE = Path("python") / "demo"
+
+#: Written inside an extracted tree, holding the digest it was extracted
+#: from. The same marker ``scripts/build-wheel.sh`` writes, for the same
+#: reason: the directory is named after the release, so the name alone cannot
+#: notice that the release's bytes were replaced.
+EXTRACTED_MARKER = ".extracted"
 
 #: The metadata lookup the payload cannot answer. DOLFINx's own
 #: ``__init__`` used to read its version this way and the assembly rewrites
@@ -225,65 +224,58 @@ def demo_dir(source: Path) -> Path:
     )
 
 
-def fetch(cache: Path, url: str = "") -> Path:
+def fetch(cache: Path, url: str = "", expected: str = "") -> Path:
     """Return the demo directory, downloading the pinned release if needed.
 
     The release is the one this wheel mirrors, read from the same driver the
     container build reads it from: running a newer release's demos against
     this wheel would be testing upstream's API drift, not the wheel.
 
+    It is also the same tarball, at the same URL, as the build's DOLFINx
+    stage, so it is verified against the same recorded digest rather than a
+    second one kept in step by hand (ticket 10). These bytes become a test
+    input rather than a vendored binary, which makes this the weaker of the
+    two cases — but a demo stage that passed against a tarball nobody
+    recognised would be proving something about the wrong sources.
+
     Args:
         cache: Directory to download and extract into, reused across runs.
         url: Where to fetch from. Defaults to the pinned source URL.
+        expected: The SHA-256 to require. Defaults to the driver's.
 
     Returns:
         The demo directory.
 
     Raises:
-        ValueError: When the URL is not an HTTPS one.
+        ValueError: When the URL is not an HTTPS one, or the archive is not
+            the pinned one.
     """
     url = url or dolfinx_driver.source_url()
+    expected = expected or dolfinx_driver.DOLFINX_SHA256
     if not url.startswith("https://"):
         raise ValueError(f"{url} is not an https URL, and the sources are.")
     cache.mkdir(parents=True, exist_ok=True)
     extracted = cache / dolfinx_driver.source_dir_name()
-    if not (extracted / DEMO_RELATIVE).is_dir():
-        archive = cache / f"{dolfinx_driver.source_dir_name()}.tar.gz"
-        if not archive.exists():
-            download(url, archive)
+    marker = extracted / EXTRACTED_MARKER
+    unpacked = (extracted / DEMO_RELATIVE).is_dir()
+    verified = marker.read_text(encoding="utf-8").strip() if marker.is_file() else ""
+    if not unpacked or verified != expected:
+        # Nothing re-hashes an extracted tree, so the marker is what carries
+        # the digest forward. Without it a digest moved without the version --
+        # the re-rolled tarball this check exists for -- would keep running
+        # the demos out of the bytes it replaced, because the directory name
+        # is the release and the release did not change.
+        shutil.rmtree(extracted, ignore_errors=True)
+        # Verified on the run that unpacks it, not only on the run that
+        # downloads it: the cache is kept between CI runs, so an archive
+        # already sitting there is hashed too.
+        archive = sources.fetch(
+            url, cache / f"{dolfinx_driver.source_dir_name()}.tar.gz", expected
+        )
         with tarfile.open(archive) as tar:
             tar.extractall(cache, filter="data")
+        marker.write_text(f"{expected}\n", encoding="utf-8")
     return demo_dir(extracted)
-
-
-def download(url: str, archive: Path) -> Path:
-    """Fetch an archive, leaving nothing behind if the fetch does not finish.
-
-    The cache is reused across runs, so a half-written file is not one bad
-    run — it is every later run reading the same truncated tarball out of
-    the cache and failing the same way, with nothing to say the bytes are
-    the problem. So the download lands on a temporary name and is renamed
-    only once it is complete, which on one filesystem is atomic.
-
-    Args:
-        url: Where to fetch from.
-        archive: Where the finished file goes.
-
-    Returns:
-        The archive.
-    """
-    print(f"+ download {url}", flush=True)
-    partial = archive.with_suffix(f"{archive.suffix}.part")
-    request = urllib.request.Request(  # noqa: S310 - https, checked by the caller
-        url, headers={"User-Agent": USER_AGENT}
-    )
-    try:
-        with urllib.request.urlopen(request) as response:  # noqa: S310
-            partial.write_bytes(response.read())
-        partial.replace(archive)
-    finally:
-        partial.unlink(missing_ok=True)
-    return archive
 
 
 def metadata_problem(sources: Iterable[tuple[str, str]]) -> str | None:

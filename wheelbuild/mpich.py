@@ -63,6 +63,12 @@ if TYPE_CHECKING:
 #: ``wheelbuild.pin_check`` enforces.
 MPICH_VERSION = "5.0.1"
 
+#: SHA-256 of the source archive :func:`source_url` serves, so the bytes that become
+#: vendored binaries are pinned by content and not only by version
+#: (spec §10). Moving the release above means moving this with it;
+#: :mod:`wheelbuild.sources` is what refuses to unpack anything else.
+MPICH_SHA256 = "8c1832a13ddacf071685069f5fadfd1f2877a29e1a628652892c65211b1f3327"
+
 #: Soname of the runtime ``libmpi``, frozen across MPICH's 4.x and 5.x series.
 #: It is what every vendored library's ``DT_NEEDED`` names and what mpi4py
 #: dlopens out of the environment prefix.

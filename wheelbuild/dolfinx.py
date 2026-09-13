@@ -67,6 +67,20 @@ if TYPE_CHECKING:
 #: wheel's version *is* the upstream release it mirrors.
 DOLFINX_VERSION = version_module.DOLFINX_VERSION
 
+#: SHA-256 of the source archive :func:`source_url` serves. Unlike the release
+#: above this is not the package's to declare — the version is a fact about
+#: what this wheel *is*, the digest is a fact about bytes fetched over the
+#: network — so it is recorded here, beside the URL it pins, and three places
+#: read it from here: the container build's ``fetch_source``,
+#: :mod:`wheeltest.demos`, which runs upstream's own demos out of this same
+#: tarball, and :func:`wheelbuild.pin_check.fetch_upstream_pyproject`, which
+#: reads upstream's trio pins out of it rather than off an unverified raw
+#: file (spec §10). GitHub serves this one, and its archive endpoint
+#: regenerates tarballs rather than storing them; the bytes have been stable
+#: since GitHub's 2023 commitment to that, and this digest is what would
+#: notice if they stopped being.
+DOLFINX_SHA256 = "47c635cb82a99482d23e2e6bca26c31c9b2297bcad1ab5f5c651541caaaec68f"
+
 #: That release without a packaging segment, which is what DOLFINx's own
 #: ``project(DOLFINX VERSION ...)`` line carries and therefore what the
 #: installed ``dolfinx.pc`` reports.

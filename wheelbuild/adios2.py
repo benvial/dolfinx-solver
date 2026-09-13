@@ -45,6 +45,12 @@ if TYPE_CHECKING:
 #: pairing that exists.
 ADIOS2_VERSION = "2.12.1"
 
+#: SHA-256 of the source archive :func:`source_url` serves, so the bytes that become
+#: vendored binaries are pinned by content and not only by version
+#: (spec §10). Moving the release above means moving this with it;
+#: :mod:`wheelbuild.sources` is what refuses to unpack anything else.
+ADIOS2_SHA256 = "71edd8f721448311852122fca8d83ae497b43846e5bfcdfd275dc06bb7f3d0c5"
+
 #: The C++ library DOLFINx links against. ADIOS2 2.11 renamed it from
 #: ``adios2_cxx11`` to ``adios2_cxx``, which is why DOLFINx's CMake looks for
 #: both targets; the wheel builds one pinned release, so one name is what this

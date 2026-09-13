@@ -37,6 +37,12 @@ if TYPE_CHECKING:
 #: number and :data:`wheelbuild.petsc.PETSC_VERSION` move together.
 SLEPC_VERSION = "3.25.1"
 
+#: SHA-256 of the source archive :func:`source_url` serves, so the bytes that become
+#: vendored binaries are pinned by content and not only by version
+#: (spec §10). Moving the release above means moving this with it;
+#: :mod:`wheelbuild.sources` is what refuses to unpack anything else.
+SLEPC_SHA256 = "906ddbe15a20774c23ddcdf13a5054889d00a26c3c37463447ee593c757d03ee"
+
 #: What a finished prefix install has to contain.
 REQUIRED_ARTEFACTS = (
     Path("include/slepc.h"),

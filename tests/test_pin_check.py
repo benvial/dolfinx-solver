@@ -6,6 +6,8 @@ that series exactly — not a floor that admits an older runtime, and not a
 newer series than the one we built against.
 """
 
+import tarfile
+
 import pytest
 
 from wheelbuild import mpich, pin_check
@@ -109,11 +111,48 @@ dependencies = [
 """
 
 
-def test_the_upstream_pyproject_is_read_at_the_mirrored_tag():
-    url = pin_check.upstream_pyproject_url("0.11.0.post0")
+def test_the_upstream_pyproject_is_read_at_the_mirrored_release():
+    """Out of the pinned tarball, whose own bytes are checked (ticket 10)."""
+    member = pin_check.upstream_pyproject_member("0.11.0.post0")
 
-    assert url.endswith("/v0.11.0.post0/python/pyproject.toml")
-    assert url.startswith("https://")
+    assert member == "dolfinx-0.11.0.post0/python/pyproject.toml"
+
+
+def test_the_upstream_pins_are_read_out_of_bytes_this_repository_checked(
+    tmp_path, monkeypatch
+):
+    """The file decides whether the check passes, so it is not fetched raw."""
+    from wheelbuild import dolfinx, sources
+
+    def write_something_else(_url, path):
+        path.write_bytes(b"not the release this wheel mirrors")
+        return path
+
+    monkeypatch.setattr(sources, "download", write_something_else)
+
+    with pytest.raises(ValueError, match=dolfinx.DOLFINX_SHA256):
+        pin_check.fetch_upstream_pyproject(tmp_path)
+
+
+def test_the_upstream_pins_come_out_of_the_tarball_the_build_compiles(
+    tmp_path, monkeypatch
+):
+    """The member read is the one upstream's own archive carries."""
+    from wheelbuild import dolfinx, sources
+
+    member = pin_check.upstream_pyproject_member()
+    inside = tmp_path / "inside" / member
+    inside.parent.mkdir(parents=True)
+    inside.write_text(UPSTREAM_PYPROJECT, encoding="utf-8")
+    archive = tmp_path / f"{dolfinx.source_dir_name()}.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(inside, arcname=member)
+    monkeypatch.setattr(dolfinx, "DOLFINX_SHA256", sources.digest(archive))
+
+    text, source = pin_check.fetch_upstream_pyproject(tmp_path)
+
+    assert pin_check.trio_problem(PYPROJECT_WITH_TRIO, text) is None
+    assert member in source
 
 
 def test_our_trio_pins_and_upstreams_agree():

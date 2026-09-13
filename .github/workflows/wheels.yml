@@ -80,8 +80,12 @@ jobs:
       # user's resolver: the vendored libmpifort's MPICH series against the
       # declared `mpich` bound, and our trio pins against the ones upstream
       # DOLFINx declares at the release this wheel mirrors. --fetch-upstream
-      # reads that file at its tag, which is the same immutable text the
-      # build compiles against.
+      # reads that file out of upstream's source tarball — under a megabyte,
+      # and verified against the SHA-256 wheelbuild.dolfinx records for it
+      # (ticket 10, spec §10) — rather than off raw.githubusercontent.com,
+      # where nothing checked the bytes that decided whether this passed. It
+      # is the same archive, and therefore the same text, the build compiles
+      # DOLFINx from hours later.
       - name: Pin check
         run: python -m wheelbuild.pin_check --fetch-upstream
 
@@ -220,11 +224,18 @@ jobs:
       # The demo stage runs upstream's own demos, from the source tarball of
       # the release the wheel mirrors. It is the same immutable tag every run,
       # so it is downloaded once and kept.
+      #
+      # Keyed on the driver as well as the version: the digest the archive is
+      # verified against lives in wheelbuild/dolfinx.py (ticket 10), and what
+      # this cache holds is an *extracted* tree, which nothing re-hashes. A
+      # digest moved without the version — an upstream tarball re-rolled under
+      # the same tag, which is the case the digest exists to catch — would
+      # otherwise keep running the demos out of the bytes it replaced.
       - name: Cache the upstream demo sources
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/wheeltest/demo-source
-          key: demo-source-${{ hashFiles('dolfinx_solver/_version.py') }}
+          key: demo-source-${{ hashFiles('dolfinx_solver/_version.py', 'wheelbuild/dolfinx.py') }}
 
       # PYTHONPATH is deliberately not set here: scripts/_wheel_venv.sh sets
       # it to the repository root itself, and a second value on top of that is

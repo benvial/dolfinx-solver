@@ -43,6 +43,12 @@ if TYPE_CHECKING:
 #: (``docker/Dockerfile.test-env``).
 KAHIP_VERSION = "3.25"
 
+#: SHA-256 of the source archive :func:`source_url` serves, so the bytes that become
+#: vendored binaries are pinned by content and not only by version
+#: (spec §10). Moving the release above means moving this with it;
+#: :mod:`wheelbuild.sources` is what refuses to unpack anything else.
+KAHIP_SHA256 = "3abad20158887b585b4d4792c35fa9023b7fd634b2bc4494334a3951b69f4842"
+
 #: What a finished prefix install has to contain. Both halves are required:
 #: DOLFINx's ``FindKaHIP.cmake`` looks for ``parhip_interface.h`` and links
 #: both ``libparhip_interface`` (the parallel partitioner) and ``libkahip``
