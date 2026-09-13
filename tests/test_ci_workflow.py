@@ -336,3 +336,13 @@ def test_one_variant_failing_to_build_still_tests_the_other(workflow):
 
     assert tests["needs"] == "wheel"
     assert "cancelled()" in tests["if"]
+
+
+def test_a_checks_failure_does_not_start_the_tests_matrix(workflow):
+    """`!cancelled()` alone also defeats the skip when `wheel` was *skipped*,
+    which is what a failed `checks` does: a ruff error would start all six
+    test jobs to spend a runner each reaching `download-artifact` and failing
+    there, under a report the lint failure already made (ticket 30)."""
+    tests = workflow["jobs"]["tests"]
+
+    assert "needs.wheel.result != 'skipped'" in tests["if"]
