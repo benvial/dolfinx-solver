@@ -93,6 +93,54 @@ installed in it), `WHEELHOUSE` the directory holding the wheel, and
 downloading the pinned release. The suite itself runs under `DRIVER_PYTHON`,
 which is the environment the dev extras are installed in.
 
+## Releasing
+
+A `v*` tag publishes three distributions from one workflow run: the two binary
+variants it just built and tested, and the bare `dolfinx-solver`
+meta-package, built in the publish job from `meta/`. They go up together —
+`dolfinx-solver-real` cannot be added to a release afterwards under the same
+version, and the meta-package pins its variant exactly — so the gather step
+refuses a set that is not all three at `dolfinx_solver.__version__`:
+
+```console
+python -m wheelbuild.publish --wheelhouse wheelhouse --outdir dist
+```
+
+Uploading uses PyPI trusted publishing: an OIDC token minted for the publish
+job, no API token stored anywhere. Three things have to be configured once,
+before the first release:
+
+1. A trusted publisher on each of `dolfinx-solver-complex`,
+   `dolfinx-solver-real` and `dolfinx-solver` — owner `benvial`, repository
+   `dolfinx-solver`, workflow `wheels.yml`, environment `release`. The same
+   three on TestPyPI, for the dry run.
+2. A `release` environment on the GitHub repository. Every upload passes
+   through it, which is where a required reviewer goes: PyPI never reuses a
+   filename, so the upload is the one step of this workflow that cannot be
+   re-run.
+3. The dry run itself — one manual dispatch of the wheels workflow with
+   **publish-to: testpypi**, which gathers and uploads exactly what a tag
+   would, then installs it back out of TestPyPI. Spec §9 asks for it once,
+   not per tag.
+
+The tag is checked against the packaged version in seconds, in the checks job,
+long before the build:
+
+```console
+git tag v$(python -c 'import dolfinx_solver; print(dolfinx_solver.__version__)')
+```
+
+After the upload, the `published` job installs the release the way a stranger
+does — `pip install dolfinx-solver` on a machine that compiled nothing — and
+puts three things to it: the meta-package resolves to
+`dolfinx-solver-complex`, that wheel solves the numerical smoke problem, and
+the refusals name the distribution pip recorded rather than the name that was
+typed. It can also be run by hand against an index:
+
+```console
+python -m wheeltest.published --index pypi --work-dir /tmp/published
+```
+
 ## License
 
 LGPL-3.0-or-later, matching DOLFINx. The wheel carries a `THIRD-PARTY-NOTICES`

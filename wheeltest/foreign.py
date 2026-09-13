@@ -219,6 +219,29 @@ def run_case(case: Case, root: Path, python: str = sys.executable) -> str | None
     """
     builder = BUILDERS.get(case.name)
     path = None if builder is None else builder(root / case.name.replace(" ", "-"))
+    return put_case(case, path, python)
+
+
+def put_case(
+    case: Case, path: Path | None = None, python: str = sys.executable
+) -> str | None:
+    """Put one already-built environment to the installed wheel.
+
+    Separate from :func:`run_case` because the environments are built two
+    ways: this module fabricates them beside a wheel installed from a file,
+    and :mod:`wheeltest.published` finds them already there, installed from
+    an index by name. What a right answer looks like is the same either way,
+    and is written down once, here.
+
+    Args:
+        case: The answer required of it.
+        path: Directory to put ahead of the installed packages, or ``None``
+            for an environment nothing was added to.
+        python: The interpreter the wheel is installed for.
+
+    Returns:
+        A message, or ``None`` when the wheel answered as it must.
+    """
     completed = subprocess.run(
         [python, *SAFE_PATH, "-c", IMPORT_PROGRAM],
         env=child_environment(path),

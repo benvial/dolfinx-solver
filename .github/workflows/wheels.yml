@@ -17,8 +17,14 @@
 #           put through the whole wheeltest suite — on the plain runner, never
 #           in the build image, because manylinux_2_34 is a promise about
 #           other machines and the image that compiled it cannot test that.
+#   publish the upload, on a `v*` tag or a deliberate dry run, and nowhere
+#           else. Trusted publishing: an OIDC token minted for this job, no
+#           secret in the repository (spec §9).
+#   published  the release read back out of the index it was uploaded to,
+#           which is the half no local run reaches: three distributions
+#           resolving each other by name on a machine that built nothing.
 #
-# The last two are a matrix over the scalar type, which is what makes
+# The middle two are a matrix over the scalar type, which is what makes
 # dolfinx-solver-complex and dolfinx-solver-real two jobs of one workflow
 # rather than one workflow and a manual flip (spec §6, ticket 21). Each job
 # sets DOLFINX_SOLVER_SCALAR_TYPE, and wheelbuild.petsc resolves it once into
@@ -28,8 +34,11 @@
 # variant that claimed it and refuses the other (ticket 17) — and their own
 # artefact.
 #
-# Publishing is deliberately not here: a `v*` tag gets as far as a tested
-# wheel, and the upload is its own workflow (spec §9).
+# The final two run on a tag and nowhere else, and the whole workflow is one
+# file rather than two so that what a tag publishes is what this run tested:
+# a second workflow triggered by the tag would build its own wheels, and the
+# artefacts a release is made of would be a different compile from the one
+# that passed (spec §9).
 name: wheels
 
 on:
@@ -38,6 +47,17 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      # Spec §9 asks for one manual TestPyPI publish before the first real
+      # release, and for no per-tag TestPyPI stage afterwards. That is this
+      # input rather than a second workflow: the dry run has to gather,
+      # upload and install back exactly what a tag does, and the only honest
+      # way to prove that path is to run it.
+      publish-to:
+        description: 'Upload the built release to TestPyPI (the one-time dry run). A tag always publishes to PyPI.'
+        type: choice
+        options: [nowhere, testpypi]
+        default: nowhere
 
 # One run per ref, but cancellation is scoped to pull requests. A cold
 # superbuild is hours, and the cache is written by the job's post-step — so
@@ -330,3 +350,122 @@ jobs:
           WORK_DIR: ${{ runner.temp }}/wheeltest
           WHEELHOUSE: ${{ github.workspace }}/wheelhouse
         run: scripts/test-wheel.sh
+
+  # Everything above this line runs on every push. Everything below it runs on
+  # a `v*` tag, or on a dispatch that deliberately asks for the dry run, and
+  # both of them read `INDEX` to know which index they are talking about. The
+  # job-level expression is the short form of the `if` above it: given that
+  # condition, "not the dry run" is the tag.
+  publish:
+    name: publish (${{ inputs.publish-to == 'testpypi' && 'testpypi' || 'pypi' }})
+    # The tests job, not the wheel job. The wheel job produces an artefact no
+    # interpreter has imported; the tests job is what proves the manylinux
+    # claim on a plain runner, and `needs` here waits for all six of its legs
+    # — both variants on all three interpreters — because a release is the
+    # pair (ticket 21).
+    needs: tests
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.publish-to == 'testpypi' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # One environment for both indexes, so there is one place to require a
+    # reviewer before anything irreversible happens and one name to configure
+    # on the two trusted publishers. PyPI never reuses a filename: an upload
+    # is the only step in this workflow that cannot be re-run.
+    environment: release
+    permissions:
+      # What trusted publishing turns on: a short-lived OIDC token this job
+      # exchanges at the index for an upload token. The workflow-level
+      # permissions deliberately do not carry it, so no other job in this
+      # file can publish anything (spec §9).
+      id-token: write
+      contents: read
+    env:
+      INDEX: ${{ inputs.publish-to == 'testpypi' && 'testpypi' || 'pypi' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.ABI3_PYTHON }}
+
+      # Not the dev extras: this job builds one pure-python wheel out of a
+      # pyproject.toml naming one dependency, and reads file names. The
+      # hash-pinned wheelbuild/requirements.txt is the *compile's* tooling
+      # (spec §10) and has nothing to do with either.
+      - name: Install what gathering a release needs
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build packaging
+
+      # Both variants, into one directory. Each wheel job uploaded its own
+      # artefact, and a release is the pair: `pattern` with `merge-multiple`
+      # is what collects them, and a missing one is caught by the gather step
+      # rather than here — "this release has no real wheel" is a better
+      # message than "no artefact matched".
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheelhouse-*
+          merge-multiple: true
+          path: wheelhouse
+
+      # The last place a wrong file can be stopped. It copies the wheels in,
+      # builds the meta-package beside them — nothing else in the workflow
+      # builds it, because it has no binaries — and then reads the directory
+      # back: exactly one wheel per published distribution, all at this
+      # version, and nothing else at all. The upload sends the whole
+      # directory, so what is in it is the release.
+      - name: Gather what this release publishes
+        run: python -m wheelbuild.publish --wheelhouse wheelhouse --outdir dist
+
+      # Two steps rather than one with a computed URL, so each names the
+      # index it uploads to in the file. Attestations are the action's
+      # default and are left on: they are a claim about this wheel coming
+      # from this workflow, which is the half the recorded source digests
+      # (spec §10) do not cover.
+      - name: Publish to TestPyPI
+        if: env.INDEX == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish to PyPI
+        if: env.INDEX == 'pypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          repository-url: https://upload.pypi.org/legacy/
+
+  published:
+    name: published (${{ inputs.publish-to == 'testpypi' && 'testpypi' || 'pypi' }})
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Deliberately no id-token and no environment: this job installs what was
+    # published and can do nothing else. It is also the only job in the file
+    # that has no artefact from this run — it downloads nothing, because what
+    # it is checking is that a stranger can get the release by name.
+    env:
+      INDEX: ${{ inputs.publish-to == 'testpypi' && 'testpypi' || 'pypi' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.ABI3_PYTHON }}
+
+      # The driver's own requirement, installed into the interpreter that
+      # drives. The venvs it makes get everything from the index.
+      - name: Install what the check's driver needs
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install packaging
+
+      # `pip install dolfinx-solver` on a machine that compiled nothing: the
+      # meta-package resolving to a variant, that variant solving the smoke
+      # problem, and the two refusals that can only be built once the
+      # distributions exist by name — a stray petsc4py beside the variant the
+      # resolver chose (ticket 23), and both variants in one environment
+      # (ticket 34).
+      - name: Install the release back out of the index
+        run: python -m wheeltest.published --index "$INDEX" --work-dir "${{ runner.temp }}/published"
