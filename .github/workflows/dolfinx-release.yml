@@ -29,6 +29,12 @@ on:
 permissions:
   contents: read
 
+env:
+  # This job runs the unit suite over the bumped tree, and that suite imports
+  # dolfinx_solver — which initialises MPI. See wheels.yml for why UCX is told
+  # which transports to consider rather than left to discover them.
+  UCX_TLS: self,sm,tcp
+
 jobs:
   bump:
     name: open a bump pull request when upstream is ahead

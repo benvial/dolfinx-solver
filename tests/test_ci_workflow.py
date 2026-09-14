@@ -16,9 +16,14 @@ import yaml
 from wheelbuild.petsc import SCALAR_TYPE_VARIABLE, SCALAR_TYPES
 from wheelbuild.publish import ENVIRONMENTS, INDEXES
 from wheelbuild.version import DOLFINX_VERSION
+from wheeltest.environment import UCX_TRANSPORTS, UCX_TRANSPORTS_VARIABLE
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "wheels.yml"
+
+#: The other workflow in this repository: the weekly upstream release check,
+#: which runs the same unit suite over the tree it has just bumped.
+RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "dolfinx-release.yml"
 
 #: The jobs a release is uploaded from — one per distribution, because a
 #: pending publisher is identified by environment and never by project name
@@ -133,6 +138,22 @@ def test_the_checks_job_lints_and_type_checks_every_package(workflow):
     assert "ruff format --check ." in commands
     assert "mypy dolfinx_solver wheelbuild wheeltest" in commands
     assert "pytest" in commands
+
+
+@pytest.mark.parametrize("path", [WORKFLOW, RELEASE_WORKFLOW])
+def test_ucx_is_told_which_transports_to_use(path):
+    """Every workflow that runs the unit suite has to set it.
+
+    One of those tests imports `dolfinx_solver`, which initialises MPI, and
+    MPICH picks its transport through UCX at that moment. A runner whose host
+    exposes an RDMA device a guest may not open kills the import — and with it
+    pytest, with no output naming a test at all. The stages that run a
+    built wheel set the same variable from `wheeltest.environment`, and the
+    value is read from there so a change to one reaches both.
+    """
+    declared = yaml.safe_load(path.read_text(encoding="utf-8"))["env"]
+
+    assert declared[UCX_TRANSPORTS_VARIABLE] == UCX_TRANSPORTS
 
 
 def test_the_pin_check_compares_against_upstreams_own_pins(workflow):

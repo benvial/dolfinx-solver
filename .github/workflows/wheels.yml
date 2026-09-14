@@ -76,6 +76,16 @@ env:
   # The interpreter the abi3 wheel targets, and the one the checks job runs.
   ABI3_PYTHON: '3.12'
 
+  # MPICH picks its transport through UCX at MPI_Init, which for this package
+  # is `import dolfinx_solver` — and the unit suite makes that import, to
+  # prove the bootstrap ordered MPI ahead of the bindings. UCX then looks at
+  # what the host exposes, and one runner in six exposes an RDMA device a
+  # guest may not open: the import dies there before a message has been sent,
+  # taking pytest with it. The value is wheeltest.environment's, which is what
+  # the wheel stages set for the same reason, and tests/test_ci_workflow.py
+  # asserts the two cannot drift apart.
+  UCX_TLS: self,sm,tcp
+
 jobs:
   checks:
     name: checks
