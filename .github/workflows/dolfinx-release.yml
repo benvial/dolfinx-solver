@@ -1,0 +1,127 @@
+# Open the DOLFINx bump as a pull request when upstream tags a release.
+#
+# Upstream DOLFINx is not a package in any ecosystem Dependabot understands —
+# this repository *is* the packaging of it — so nothing tells us a release
+# exists. This job asks GitHub once a week and, when upstream is ahead, writes
+# the release into the four files that carry it and opens the result for
+# review. What it may write is `wheelbuild.release_check`'s business and is
+# tested in `tests/test_release_check.py`; what it may not is the short list
+# in the pull request body: the nanobind coupling, the MPICH series, and the
+# tag itself.
+#
+# The pull request is deliberately where this stops. wheels.yml then runs on
+# it — both variants, built cold against the new sources and put through the
+# whole wheeltest suite — so the bump is proved by the same workflow a tag
+# would use, hours before anyone decides to tag.
+name: dolfinx release check
+
+on:
+  schedule:
+    # Mondays, 06:17 UTC. Off the hour: GitHub queues scheduled jobs, and the
+    # top of the hour is the busiest slot.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "DOLFINx release to bump to (default: upstream's latest)"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    name: open a bump pull request when upstream is ahead
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # A pull request opened with GITHUB_TOKEN does not trigger other
+      # workflows, so wheels.yml would never run on it and the bump would
+      # arrive with no checks at all — the opposite of the point. This needs a
+      # fine-grained PAT or GitHub App token with contents: write and
+      # pull-requests: write, stored as RELEASE_BUMP_TOKEN.
+      - name: Require a token that can trigger CI
+        env:
+          TOKEN: ${{ secrets.RELEASE_BUMP_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::RELEASE_BUMP_TOKEN is not set. A pull request" \
+                 "opened with the default GITHUB_TOKEN does not trigger" \
+                 "wheels.yml, so the bump would carry no checks."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          # The interpreter the abi3 wheel targets, and the one the checks job
+          # runs: a bump is proved with the same tooling that will judge it.
+          python-version: '3.12'
+
+      - name: Install the development environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+
+      # Reads upstream's latest release and compares it as a version, so a
+      # yanked release taking `latest` backwards opens nothing. The step's
+      # outputs are `packaged`, `upstream` and `behind`.
+      - name: Ask upstream what the latest release is
+        id: check
+        run: |
+          python -m wheelbuild.release_check ${REQUESTED:+--upstream "$REQUESTED"}
+        env:
+          REQUESTED: ${{ inputs.version }}
+
+      # The release goes into `_version.py`, the source digest into
+      # `wheelbuild/dolfinx.py`, upstream's own trio pins into `pyproject.toml`
+      # and the lockstep version into `meta/pyproject.toml`. Every one of those
+      # substitutions has to land exactly once or the step fails: a bump that
+      # quietly placed nothing is a pull request that looks like a bump and
+      # builds the old release.
+      - name: Write the release into the files that carry it
+        if: steps.check.outputs.behind == 'true'
+        run: |
+          python -m wheelbuild.release_check \
+            --upstream "${{ steps.check.outputs.upstream }}" \
+            --apply --report /tmp/body.md
+
+      # Seconds, and they are the checks that judge the bump itself rather
+      # than the wheel: the version rules, the meta-package's lockstep pin,
+      # and pin_check reading upstream's own file back out of the release
+      # tarball the new digest now pins. A bump that fails here is malformed
+      # and should not become a pull request at all.
+      - name: Prove the bump before opening it
+        if: steps.check.outputs.behind == 'true'
+        run: |
+          ruff format --check .
+          ruff check .
+          mypy dolfinx_solver wheelbuild wheeltest
+          pytest -q
+          python -m wheelbuild.pin_check --fetch-upstream
+
+      - name: Open the pull request
+        if: steps.check.outputs.behind == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.RELEASE_BUMP_TOKEN }}
+          # The branch name carries the release, so a rerun updates the open
+          # pull request instead of opening a second one.
+          branch: dolfinx/v${{ steps.check.outputs.upstream }}
+          title: 'chore: mirror DOLFINx ${{ steps.check.outputs.upstream }}'
+          body-path: /tmp/body.md
+          commit-message: |
+            chore: mirror DOLFINx ${{ steps.check.outputs.upstream }}
+
+            Upstream tagged v${{ steps.check.outputs.upstream }}. The release
+            is written into the four files that carry it: the version module
+            the build drivers and the tag read, the source digest, upstream's
+            own trio pins copied verbatim out of that release, and the
+            meta-package that releases in lockstep.
+          add-paths: |
+            dolfinx_solver/_version.py
+            wheelbuild/dolfinx.py
+            pyproject.toml
+            meta/pyproject.toml
+          delete-branch: true
